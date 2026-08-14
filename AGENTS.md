@@ -122,6 +122,7 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
 ### Documentation
 - https://massive.com/docs/llms.txt
 - README.md, docs/TECHNICAL_DESIGN.md, docs/MULTI_TYPE.md, docs/PORTFOLIO.md
+- **TODO** `myquantstore serve` (API query réseau, pas le chart) : `docs/TODO_SERVE.md` — backtest hebdo = snapshot Parquet, pas cette API.
 - **`--adjust` est implémenté** (futures back-adjusted rollover + stocks dividends après splits). Ne pas le documenter comme stub/NotImplemented.
 - Maintenir AGENTS.md à jour (ce fichier est la source de vérité pour les consignes de dev).
 
