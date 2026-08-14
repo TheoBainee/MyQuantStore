@@ -79,8 +79,8 @@ def resolve_config_path(config_path: str | Path | None = None) -> Path:
         return fallback.resolve()
     raise FileNotFoundError(
         f"Fichier de configuration introuvable : {get_user_config_path()}. "
-        "Créez-le à partir de config.toml.example dans le dépôt "
-        f"(cp config.toml.example {get_user_config_path()}), "
+        "Lancez `myquantstore init` (recommandé), ou copiez "
+        f"config.toml.example vers {get_user_config_path()}, "
         "ou placez un config.toml dans le répertoire courant."
     )
 

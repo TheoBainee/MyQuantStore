@@ -1,0 +1,92 @@
+# Configuration MyQuantStore — profil MINIMAL (premier run léger).
+# Généré par `myquantstore init`. Éditer pour ajouter des instruments.
+# Secrets : ~/.config/myquantstore/.env (myquantstore setup-key).
+#
+# Pour un jeu d'exemples multi-type plus large : `myquantstore init --full --force`
+
+[instruments]
+# Symboles nus par type (préfixe API C:/I:/O: ajouté automatiquement).
+futures = []
+forex = []
+stocks = ["AAPL"]
+indices = []
+options = []
+
+[futures]
+days_before_expiry = 7
+contracts_page_limit = 1000
+contracts_snapshot_interval_months = 1
+
+[stocks]
+splits_page_limit = 5000
+dividends_page_limit = 5000
+
+[tickers]
+page_limit = 1000
+
+[instrument_cache]
+ttl_days = 30
+
+[fetch]
+timeframe = "1min"
+overlap_buffer_days = 1
+requests_per_minute = 6
+page_limit = 50000
+max_retries = 6
+
+[fetch.history_months]
+futures = 24
+forex = 24
+stocks = 24
+indices = 60
+options = 24
+
+[health]
+stale_lag_days_1min = 3
+stale_lag_days_1day = 5
+cross_resolution_lag_days = 7
+
+[yahoo]
+requests_per_minute = 12
+overlap_buffer_days = 5
+
+[storage]
+data_dir = "~/.local/share/myquantstore/data"
+raw_dumps_subdir = "raw"
+aggregate_subdir = "aggregate"
+cache_dir = "~/.local/share/myquantstore/cache"
+log_dir = "~/.local/share/myquantstore/logs"
+
+[tests]
+data_quality_trigger = 0.1
+
+[logging]
+level = "DEBUG"
+
+[display]
+max_rows = 10
+max_columns = 20
+
+[chart]
+default_timescale_unit = "min"
+default_timescale_nb = 5
+default_nb_candle = 2000
+max_visible_candles = 100000
+buffer_multiplier = 3
+fetch_chunk_size = 50000
+port = 8050
+host = "127.0.0.1"
+mdns = false
+thumbnail_lookback_days = 90
+
+[portfolio]
+risk_free_rate = 0.04
+rf_source = "yahoo"
+rf_yahoo_ticker = "^IRX"
+rf_cache_ttl_days = 1
+trading_days_per_year = 252
+min_coverage = 0.95
+frontier_samples = 5000
+default_lookback_years = 5
+optim_seed = 42
+default_value = 20000.0

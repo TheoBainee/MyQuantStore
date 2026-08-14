@@ -1,0 +1,23 @@
+# MyQuantStore — oneshot fetch + aggregate + status --check
+# Préférer: myquantstore schedule install
+#
+# Installation manuelle (user):
+#   BIN=$(command -v myquantstore)
+#   sed "s|@BINARY@|$BIN|g" contrib/systemd/myquantstore-fetch.service \
+#     > ~/.config/systemd/user/myquantstore-fetch.service
+#   cp contrib/systemd/myquantstore-fetch.timer ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now myquantstore-fetch.timer
+
+[Unit]
+Description=MyQuantStore OHLCV fetch + aggregate + health check
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=@BINARY@ schedule run
+Nice=10
+
+[Install]
+WantedBy=default.target

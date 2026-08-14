@@ -37,49 +37,78 @@ Deux familles de timeframes / sources, **sans se croiser** pour reconstruire un 
 ## Prérequis
 
 - Python ≥ 3.11
-- [uv](https://docs.astral.sh/uv/) (recommandé) ou pip
-- [pipx](https://pipx.pypa.io/) pour une installation globale du binaire (optionnel)
+- [pipx](https://pipx.pypa.io/) ou [uv](https://docs.astral.sh/uv/) pour le binaire global (recommandé)
+- Clé API [Massive.com](https://massive.com) pour le track **1min** (le **1day** Yahoo fonctionne sans)
 
-## Installation
+## Quickstart (5 minutes)
+
+**Sans cloner** (binaire isolé, install figée) :
+
+```bash
+pipx install git+https://github.com/TheoBainee/MyQuantStore.git
+# équivalent uv :
+# uv tool install git+https://github.com/TheoBainee/MyQuantStore.git
+
+myquantstore init
+myquantstore doctor
+myquantstore fetch --dry-run
+myquantstore fetch
+myquantstore schedule install     # samedi 01h00 — systemd user ou cron (auto)
+myquantstore status
+```
+
+**Depuis un clone** :
+
+```bash
+git clone https://github.com/TheoBainee/MyQuantStore.git
+cd MyQuantStore
+pipx install .                    # install normale (pas --editable)
+myquantstore init && myquantstore doctor
+```
+
+- `init` crée `~/.config/myquantstore/config.toml` (profil **minimal** par défaut).
+- `init --full` copie l'exemple multi-type (futures/forex/stocks/indices) — **backfill beaucoup plus lourd**.
+- Clé non interactive : `myquantstore setup-key --api-key YOUR_KEY --yes` ou `init -k YOUR_KEY`.
+- Mise à jour plus tard : `pipx reinstall myquantstore` ou `pipx install --force git+https://github.com/TheoBainee/MyQuantStore.git`.
+
+## Installation détaillée
+
+### Usage quotidien (binaire global)
+
+Install **non-editable** : le code est copié dans l'environnement pipx/uv ; les changements locaux au dépôt ne sont **pas** pris en compte tant qu'on ne réinstalle pas.
+
+```bash
+# Depuis GitHub
+pipx install git+https://github.com/TheoBainee/MyQuantStore.git
+# ou: uv tool install git+https://github.com/TheoBainee/MyQuantStore.git
+
+# Depuis un clone local
+cd MyQuantStore && pipx install .
+
+myquantstore --help
+
+# Upgrade
+pipx reinstall myquantstore
+# ou: pipx install --force git+https://github.com/TheoBainee/MyQuantStore.git
+```
 
 ### Développement (contribuer / tester)
 
+L’install **editable** (`-e`) est réservée aux contributeurs : le binaire pointe vers les sources du clone.
+
 ```bash
-# Cloner le dépôt
 git clone https://github.com/TheoBainee/MyQuantStore.git
 cd MyQuantStore
-
-# 1. Créer l'environnement virtuel
 uv venv .venv
-
-# 2. L'activer
 source .venv/bin/activate        # Linux / macOS
-# .venv\Scripts\activate          # Windows (PowerShell)
-
-# 3. Installer le projet en mode editable (avec les dépendances de dev)
 uv pip install -e ".[dev]"
-```
-
-> **Sans uv** : remplacez l'étape 1 par `python -m venv .venv` et l'étape 3 par `pip install -e ".[dev]"`.
-
-### Usage quotidien (binaire global, sans activation de venv)
-
-Pour utiliser `myquantstore` sans avoir à activer un venv à chaque fois, installez-le
-globalement avec [pipx](https://pipx.pypa.io/) depuis le dossier du dépôt :
-
-```bash
-pipx install --editable .
-```
-
-Le binaire `myquantstore` est alors disponible partout (dans `~/.local/bin`).
-
-Vérifiez que l'installation est fonctionnelle :
-
-```bash
 myquantstore --help
 ```
 
-## Configuration rapide
+> **Sans uv** : `python -m venv .venv` puis `pip install -e ".[dev]"`.  
+> Alternative pipx en dev uniquement : `pipx install --editable .` (recharger via réinstall si besoin).
+
+## Configuration
 
 La config suit le [XDG Base Directory](https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html) :
 
@@ -89,59 +118,69 @@ La config suit le [XDG Base Directory](https://specifications.freedesktop.org/ba
 | Config métier | `~/.config/myquantstore/config.toml` | `./config.toml` |
 | Données / cache / logs | `~/.local/share/myquantstore/{data,cache,logs}` | configurable |
 
-> **Migration depuis MassiVibe** : si vous aviez déjà une install sous l'ancien nom,
-> renommez simplement les répertoires XDG :
-> `~/.config/massivibe` → `~/.config/myquantstore` et
-> `~/.local/share/massivibe` → `~/.local/share/myquantstore`
-> (les Parquet et la config restent compatibles).
-
-### 1. Installer la config métier
-
 ```bash
-mkdir -p ~/.config/myquantstore
-cp config.toml.example ~/.config/myquantstore/config.toml
-# Éditer instruments, chemins storage, etc. selon vos besoins
-```
-
-### 2. Configurer la clé API
-
-```bash
-myquantstore setup-key
-# Entrez votre clé API Massive.com (masquée)
-```
-
-Cela crée `~/.config/myquantstore/.env` (jamais committé).
-
-### 3. Vérifier la configuration
-
-```bash
+myquantstore init                 # recommandé
+# ou manuel: cp config.toml.example ~/.config/myquantstore/config.toml
+myquantstore setup-key            # ou setup-key -k KEY --yes
 myquantstore config
-myquantstore config --paths   # chemins résolus
+myquantstore config --paths
 ```
 
-Voir `docs/TECHNICAL_DESIGN.md` et `docs/MULTI_TYPE.md` pour le détail de chaque paramètre.
+> **Migration depuis MassiVibe** : renommez `~/.config/massivibe` → `myquantstore` et
+> `~/.local/share/massivibe` → `myquantstore` (Parquet + config compatibles).
+
+Voir `docs/TECHNICAL_DESIGN.md` et `docs/MULTI_TYPE.md` pour le détail des paramètres.
+
+## Automatisation (schedule)
+
+Le job périodique exécute dans l'ordre :
+
+1. **`fetch`** — dumps + mise à jour agrégat côté historian
+2. **`aggregate`** — régénère le cache Parquet `data/aggregate/` (pour brancher des traitements externes directement sur l'agrégat)
+3. **`status --check`** — exit 1 si données STALE / problème de fraîcheur (idéal monitoring)
+
+```bash
+myquantstore schedule install                    # auto: systemd user si dispo, sinon cron
+myquantstore schedule install --backend systemd  # samedi 01:00 (OnCalendar)
+myquantstore schedule install --backend cron --when '0 1 * * 6'
+myquantstore schedule install --fetch-args '--no-cascade'
+myquantstore schedule status
+myquantstore schedule run                        # exécution manuelle du job
+myquantstore schedule show                       # preview units / crontab
+myquantstore schedule uninstall
+```
+
+- **systemd user** : units dans `~/.config/systemd/user/myquantstore-fetch.{service,timer}`.
+  Si la machine est souvent hors session graphique : `loginctl enable-linger $USER`.
+  `Persistent=true` rattrape un run manqué (machine éteinte).
+- **cron** : bloc marqué `# BEGIN MYQUANTSTORE` … `# END MYQUANTSTORE` ; logs dans
+  `~/.local/share/myquantstore/logs/schedule.log`.
+- Templates manuels : `contrib/systemd/`, `contrib/cron/`.
+- Monitoring seul : `myquantstore status --check` (exit 1 si STALE).
+
+> Faites un **premier `fetch` manuel** après `init` avant de vous reposer uniquement sur le timer
+> (le 1er run peut backfiller plusieurs mois d'historique).
 
 ## Usage
 
 ### Workflow complet
 
 ```bash
-# 1. Configurer la clé API
-myquantstore setup-key
-
-# 2. Vérifier la config
+myquantstore init
+myquantstore doctor
 myquantstore config
 
-# 3. Dry-run pour valider les ranges (tous les instruments configurés)
+# Dry-run pour valider les ranges
 myquantstore fetch --dry-run
 
-# 4. Backfill complet (tous les instruments configurés)
+# Backfill complet
 myquantstore fetch
 
-# 5. Vérifier le status (adaptatif au type : RolloverChain pour futures, cache splits pour stocks)
+# Status + monitoring (exit 1 si STALE)
 myquantstore status
+myquantstore status --check
 
-# 6. Interroger l'historique (futures)
+# Interroger l'historique (futures)
 myquantstore query ES --start 2026-01-01 --end 2026-07-11 --output es_history.parquet
 
 # 7. Interroger un stock (ajustement split appliqué par défaut)
@@ -173,10 +212,12 @@ myquantstore config add TSLA NVDA                         # lookup type via cach
 
 | Commande | Description |
 |---|---|
-| `myquantstore setup-key` | Configure la clé API dans `~/.config/myquantstore/.env` |
+| `myquantstore init [--minimal\|--full] [-k KEY]` | Bootstrap XDG (config + dirs + clé optionnelle) |
+| `myquantstore doctor [--ping]` | Diagnostic install / config / chemins (exit 1 si bloquant) |
+| `myquantstore setup-key [-k KEY] [-y]` | Configure la clé API dans `~/.config/myquantstore/.env` |
+| `myquantstore schedule {install\|run\|status\|show\|uninstall}` | Job périodique fetch→aggregate→status (systemd/cron) |
 | `myquantstore config` | Affiche la configuration résolue (clé masquée) + chemin du fichier |
-
-| `myquantstore status [--instrument ES] [--type futures]` | Affiche l'état de chaque instrument (adaptatif au type) |
+| `myquantstore status [--instrument ES] [--type futures] [--check]` | État par instrument ; `--check` exit 1 si STALE |
 | `myquantstore fetch [--instrument ES] [--type futures] [--force] [--dry-run] [--no-cascade]` | Historise les chandeliers OHLCV (multi-type, cascade auto) |
 | `myquantstore aggregate [--instrument ES] [--type futures] [--no-cascade]` | Régénère le cache agrégé (générique) |
 | `myquantstore query <instrument> [--type] [--start] [--end] [--timescale-unit min\|hour] [--timescale-nb K] [--intraday-begin HH:MM] [--intraday-end HH:MM] [--adjust] [--no-split] [--normalize-tick-size] [--check-ticksize-accuracy] [--output] [--limit] [--no-cascade]` | Interroge l'historique continu |
@@ -271,8 +312,9 @@ myquantstore chart --mdns --host 0.0.0.0
 
 ```
 MyQuantStore/
-├─ config.toml.example          # Modèle de config (→ ~/.config/myquantstore/)
+├─ config.toml.example          # Modèle FULL (ou: myquantstore init)
 ├─ .env.example                 # Modèle secrets
+├─ contrib/systemd|cron/        # Templates schedule manuels
 ├─ docs/
 │  ├─ TECHNICAL_DESIGN.md       # Documentation technique
 │  ├─ MULTI_TYPE.md             # Architecture multi-type
@@ -280,6 +322,9 @@ MyQuantStore/
 ├─ src/myquantstore/
 │  ├─ cli.py                    # CLI argparse (multi-type + portfolio)
 │  ├─ config.py                 # pydantic-settings + tomllib (XDG)
+│  ├─ onboarding.py             # init / doctor
+│  ├─ schedule/                 # systemd + cron + schedule run
+│  ├─ resources/                # templates config embarqués
 │  ├─ instruments.py / chains.py / logging_setup.py
 │  ├─ api/                      # httpx + tenacity (Massive) + yahoo (curl_cffi)
 │  │  ├─ aggs_futures.py, aggs_v2.py, contracts.py
@@ -296,7 +341,7 @@ MyQuantStore/
 │  ├─ analytics/                # MPT portfolio (panel, optim, allocate, synthetic)
 │  ├─ chart/                    # FastAPI + Lightweight Charts + dashboard
 │  └─ py.typed
-└─ tests/                       # pytest + respx (~330 tests)
+└─ tests/                       # pytest + respx
 ```
 
 Config utilisateur (hors dépôt) :

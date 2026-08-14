@@ -1,6 +1,5 @@
 # Configuration MyQuantStore (profil FULL multi-type — backfill potentiellement lourd).
-# Recommandé: `myquantstore init` (minimal) ou `myquantstore init --full`.
-# Copie manuelle: cp config.toml.example ~/.config/myquantstore/config.toml
+# Installée via `myquantstore init --full`. Préférer `init` (minimal) pour un premier run.
 # Pas de secrets ici — la clé API est dans ~/.config/myquantstore/.env (ou ./.env).
 
 [instruments]

@@ -3,7 +3,10 @@
 
 Commandes disponibles :
 
-- ``myquantstore setup-key`` : demande la clé API et crée ``~/.config/myquantstore/.env``.
+- ``myquantstore init`` : bootstrap XDG (config + dirs + clé optionnelle).
+- ``myquantstore doctor`` : diagnostic install / config / chemins.
+- ``myquantstore setup-key`` : clé API Massive dans ``~/.config/myquantstore/.env``.
+- ``myquantstore schedule`` : job périodique (systemd user timer et/ou cron).
 - ``myquantstore config`` : affiche la config résolue (clé masquée) + chemin du fichier.
 - ``myquantstore config add`` : ajoute des tickers à ``config.toml`` (lookup type via cache).
 - ``myquantstore status`` : snapshot par instrument (adaptatif au type).
@@ -152,14 +155,22 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 0
 
+    # Commandes sans config.toml obligatoire
     if args.command == "setup-key":
         return _cmd_setup_key(args)
+    if args.command == "init":
+        return _cmd_init(args)
+    if args.command == "doctor":
+        return _cmd_doctor(args)
+    if args.command == "schedule" and getattr(args, "schedule_command", None) != "run":
+        # install/show/status/uninstall n'exigent pas la config métier
+        return _cmd_schedule(None, args)
 
     try:
         settings = load_settings()
     except FileNotFoundError as e:
         console.print(f"[red]Erreur:[/red] {e}")
-        console.print(f"[dim]Créez {get_user_config_path()} à partir de config.toml.example dans le dépôt.[/dim]")
+        console.print("[dim]Lancez `myquantstore init` pour créer la configuration.[/dim]")
         return 1
     except Exception as e:
         console.print(f"[red]Erreur de configuration:[/red] {e}")
@@ -183,6 +194,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_portfolio(settings, args)
     elif args.command == "status":
         return _cmd_status(settings, args)
+    elif args.command == "schedule":
+        return _cmd_schedule(settings, args)
     elif args.command == "futures":
         if getattr(args, "futures_command", None) == "contracts":
             return _cmd_futures_contracts(settings, args)
@@ -268,32 +281,48 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="myquantstore",
         description=(
-            "MyQuantStore — historisation périodique OHLCV multi-instruments.\n"
-            "Sources: Massive.com (1min) + Yahoo Finance (1day)."
+            "Historisation périodique OHLCV multi-instruments (futures, stocks, forex,\n"
+            "indices ; options = scaffold) vers des fichiers Parquet locaux.\n"
+            "\n"
+            "Deux sources indépendantes (ne pas croiser pour reconstruire un agrégat) :\n"
+            "  • 1min  — Massive.com REST (intraday) ; resample à la query (2m, 5m, 1h…)\n"
+            "  • 1day  — Yahoo Finance chart (extraday multi-type) ; resample 2d, 1w…\n"
+            "Futures : 1min = contrats Massive + rollover maison ; 1day = continu Yahoo (=F).\n"
+            "\n"
+            "Config XDG : ~/.config/myquantstore/{config.toml,.env}\n"
+            "Données    : ~/.local/share/myquantstore/{data,cache,logs}\n"
+            "\n"
+            "Flux typique : init → doctor → fetch → status → query|chart\n"
+            "Automatisation : schedule install (samedi 01h00 ; fetch→aggregate→status --check)"
         ),
         epilog=(
-            "Commandes principales:\n"
-            "  setup-key   Configure la clé API Massive (~/.config/myquantstore/.env)\n"
-            "  config      Affiche la config / chemins ; config add pour ajouter des tickers\n"
-            "  fetch       Historise les chandeliers (dumps + agrégat)\n"
-            "  aggregate   Reconstruit l'agrégat depuis les dumps existants\n"
-            "  query       Interroge l'historique (resample, adjust splits/dividendes)\n"
-            "  chart       Serveur de visualisation interactive (navigateur)\n"
-            "  portfolio   Analyse MPT (stats, corr, optim min-vol/max-sharpe)\n"
-            "  status      État caches + couverture OHLCV (lag / STALE)\n"
-            "  futures     Contrats / rollover (futures only)\n"
-            "  tickers     Cache référentiel Massive /v3/reference/tickers\n"
-            "  search      Recherche locale dans le cache tickers\n"
+            "Aide détaillée d'une commande :\n"
+            "  myquantstore <commande> -h\n"
             "\n"
-            "Exemples:\n"
-            "  myquantstore fetch -i SKHYV --timeframe 1min --force\n"
-            "  myquantstore status -i AAPL --check\n"
+            "Premiers pas :\n"
+            "  myquantstore init && myquantstore doctor\n"
+            "  myquantstore fetch --dry-run && myquantstore fetch\n"
+            "  myquantstore schedule install\n"
+            "\n"
+            "Exemples courants :\n"
+            "  myquantstore fetch -i AAPL --timeframe 1min --force\n"
+            "  myquantstore status -i AAPL --check          # exit 1 si STALE\n"
             "  myquantstore query ES --timescale-unit min --timescale-nb 5\n"
-            "  myquantstore help <commande>   ou   myquantstore <commande> -h"
+            "  myquantstore query AAPL --no-split           # prix bruts stocks\n"
+            "  myquantstore chart                          # dashboard navigateur\n"
+            "  myquantstore config add NVDA --type stocks\n"
+            "  myquantstore search apple --markets stocks\n"
+            "\n"
+            "Docs : README.md · docs/TECHNICAL_DESIGN.md · docs/MULTI_TYPE.md · docs/PORTFOLIO.md"
         ),
         formatter_class=_HELP_FMT,
     )
-    subparsers = parser.add_subparsers(dest="command", help="Commande à exécuter")
+    subparsers = parser.add_subparsers(
+        dest="command",
+        title="commandes",
+        metavar="COMMAND",
+        help="Détail : myquantstore COMMAND -h",
+    )
 
     def _sub(name: str, *, help: str, description: str, epilog: str | None = None):
         return subparsers.add_parser(
@@ -304,26 +333,207 @@ def _build_parser() -> argparse.ArgumentParser:
             formatter_class=_HELP_FMT,
         )
 
+    # --- init ---
+    p_init = _sub(
+        "init",
+        help="Crée config XDG, dirs data/cache/logs et clé API optionnelle",
+        description=(
+            "Crée ~/.config/myquantstore et ~/.local/share/myquantstore/{data,cache,logs},\n"
+            "copie une config (minimale par défaut, ou --full), optionnellement la clé API."
+        ),
+        epilog=(
+            "Exemples:\n"
+            "  myquantstore init\n"
+            "  myquantstore init --full\n"
+            "  myquantstore init --api-key YOUR_KEY\n"
+            "  myquantstore init --force --no-key"
+        ),
+    )
+    p_init_profile = p_init.add_mutually_exclusive_group()
+    p_init_profile.add_argument(
+        "--minimal",
+        action="store_true",
+        default=True,
+        help="Config minimale (défaut: stocks=[AAPL] seulement)",
+    )
+    p_init_profile.add_argument(
+        "--full",
+        action="store_true",
+        help="Config exemple multi-type (backfill plus lourd)",
+    )
+    p_init.add_argument(
+        "--force",
+        action="store_true",
+        help="Écrase config.toml / .env existants",
+    )
+    p_init.add_argument(
+        "--api-key",
+        "-k",
+        default=None,
+        metavar="KEY",
+        help="Écrit la clé API Massive (sinon prompt TTY sauf --no-key)",
+    )
+    p_init.add_argument(
+        "--no-key",
+        action="store_true",
+        help="Ne configure pas la clé API",
+    )
+    p_init.add_argument(
+        "--base-url",
+        default=None,
+        help="URL de base API (défaut: https://api.massive.com)",
+    )
+
+    # --- doctor ---
+    p_doctor = _sub(
+        "doctor",
+        help="Vérifie install, config, chemins et clé (exit 1 si bloquant)",
+        description=(
+            "Vérifie Python, config.toml, chemins data/cache/logs, clé API,\n"
+            "binaire PATH et schedule éventuel. Exit 1 si problème bloquant."
+        ),
+        epilog="Exemple: myquantstore doctor [--ping]",
+    )
+    p_doctor.add_argument(
+        "--ping",
+        action="store_true",
+        help="Tente un ping HTTP léger vers l'API Massive si clé présente",
+    )
+
     # --- setup-key ---
     p_setup = _sub(
         "setup-key",
-        help="Configure la clé API Massive dans .env (XDG)",
+        help="Écrit MASSIVE_API_KEY dans ~/.config/myquantstore/.env",
         description=(
-            "Demande interactivement la clé API Massive et l'écrit dans\n"
-            "~/.config/myquantstore/.env (jamais commité)."
+            "Écrit la clé API Massive dans ~/.config/myquantstore/.env\n"
+            "(jamais commité). Interactif par défaut ; --api-key pour scripts."
         ),
-        epilog="Exemple: myquantstore setup-key",
+        epilog=(
+            "Exemples:\n"
+            "  myquantstore setup-key\n"
+            "  myquantstore setup-key --api-key YOUR_KEY --yes"
+        ),
     )
     p_setup.add_argument(
         "--base-url",
         default=None,
         help="URL de base de l'API (défaut: https://api.massive.com)",
     )
+    p_setup.add_argument(
+        "--api-key",
+        "-k",
+        default=None,
+        metavar="KEY",
+        help="Clé API (sinon prompt masqué)",
+    )
+    p_setup.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="Écrase une clé existante sans confirmation",
+    )
+
+    # --- schedule ---
+    p_sched = _sub(
+        "schedule",
+        help="Timer OS : fetch → aggregate → status (systemd/cron, sam. 01h)",
+        description=(
+            "Installe un job OS qui exécute fetch → aggregate → status --check.\n"
+            "Backends: systemd user timer (recommandé) ou crontab utilisateur.\n"
+            "Défaut: samedi 01:00 heure locale."
+        ),
+        epilog=(
+            "Exemples:\n"
+            "  myquantstore schedule install\n"
+            "  myquantstore schedule install --backend cron --when '0 1 * * 6'\n"
+            "  myquantstore schedule install --when 'Sat *-*-* 01:00:00'\n"
+            "  myquantstore schedule run\n"
+            "  myquantstore schedule status\n"
+            "  myquantstore schedule uninstall"
+        ),
+    )
+    sched_sub = p_sched.add_subparsers(dest="schedule_command", help="Sous-commande schedule")
+    p_sched_install = sched_sub.add_parser(
+        "install",
+        help="Installe le timer/cron",
+        formatter_class=_HELP_FMT,
+    )
+    p_sched_install.add_argument(
+        "--backend",
+        choices=["auto", "systemd", "cron"],
+        default="auto",
+        help="Backend (défaut: auto = systemd user si dispo, sinon cron)",
+    )
+    p_sched_install.add_argument(
+        "--when",
+        default=None,
+        metavar="SPEC",
+        help=(
+            "Horaires: OnCalendar systemd (ex: 'Sat *-*-* 01:00:00') "
+            "ou expression cron (ex: '0 1 * * 6'). Défaut selon backend."
+        ),
+    )
+    p_sched_install.add_argument(
+        "--fetch-args",
+        default="",
+        metavar="ARGS",
+        help='Args passés à fetch via schedule run (ex: "--no-cascade")',
+    )
+    p_sched_install.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Affiche units/crontab sans installer",
+    )
+    p_sched_run = sched_sub.add_parser(
+        "run",
+        help="Exécute le job (fetch + aggregate + status --check)",
+        formatter_class=_HELP_FMT,
+    )
+    p_sched_run.add_argument(
+        "--fetch-args",
+        default="",
+        metavar="ARGS",
+        help='Args additionnels pour fetch (ex: "--type stocks")',
+    )
+    p_sched_run.add_argument(
+        "--skip-aggregate",
+        action="store_true",
+        help="Ne pas reconstruire l'agrégat après fetch",
+    )
+    p_sched_run.add_argument(
+        "--skip-status",
+        action="store_true",
+        help="Ne pas exécuter status --check en fin de job",
+    )
+    sched_sub.add_parser("status", help="État du schedule installé", formatter_class=_HELP_FMT)
+    p_sched_show = sched_sub.add_parser(
+        "show",
+        help="Affiche units/ligne cron sans installer",
+        formatter_class=_HELP_FMT,
+    )
+    p_sched_show.add_argument(
+        "--backend",
+        choices=["auto", "systemd", "cron"],
+        default="auto",
+    )
+    p_sched_show.add_argument("--when", default=None, metavar="SPEC")
+    p_sched_show.add_argument("--fetch-args", default="", metavar="ARGS")
+    p_sched_un = sched_sub.add_parser(
+        "uninstall",
+        help="Retire timer systemd et/ou bloc cron",
+        formatter_class=_HELP_FMT,
+    )
+    p_sched_un.add_argument(
+        "--backend",
+        choices=["auto", "systemd", "cron", "all"],
+        default="all",
+        help="Quoi retirer (défaut: all)",
+    )
 
     # --- config ---
     p_config = _sub(
         "config",
-        help="Affiche / modifie la configuration",
+        help="Résumé config / --paths ; config add pour ajouter des tickers",
         description=(
             "Sans sous-commande: affiche un résumé de la config chargée\n"
             "(instruments, fetch, storage, chemins résolus).\n"
@@ -374,7 +584,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # --- fetch ---
     p_fetch = _sub(
         "fetch",
-        help="Historise les chandeliers OHLCV (dumps + agrégat)",
+        help="Télécharge OHLCV (1min Massive + 1day Yahoo) → dumps/agrégat",
         description=(
             "Récupère les OHLCV et met à jour dumps pseudo-bruts + agrégat.\n"
             "\n"
@@ -414,7 +624,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # --- aggregate ---
     p_agg = _sub(
         "aggregate",
-        help="Régénère le cache agrégé depuis les dumps",
+        help="Reconstruit aggregate/*.parquet uniquement depuis les dumps",
         description=(
             "Reconstruit data/aggregate/{type}/{symbol}/{resolution}.parquet\n"
             "en concaténant tous les dumps de la résolution, dédup\n"
@@ -440,7 +650,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # --- query ---
     p_query = _sub(
         "query",
-        help="Interroge l'historique continu (resample / adjust)",
+        help="Lit l'agrégé : resample, splits/div, export Parquet",
         description=(
             "Lit l'agrégé, applique resample + ajustements optionnels, affiche\n"
             "ou écrit un Parquet.\n"
@@ -546,7 +756,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # --- chart ---
     p_chart = _sub(
         "chart",
-        help="Lance le serveur de visualisation interactive",
+        help="Dashboard + charts candlestick (FastAPI / navigateur)",
         description=(
             "Démarre un serveur HTTP local (FastAPI) et ouvre un graphique\n"
             "candlestick interactif. Les données viennent des agrégés locaux\n"
@@ -642,7 +852,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # --- status ---
     p_status = _sub(
         "status",
-        help="État caches + couverture OHLCV (lag / STALE)",
+        help="Couverture OHLCV, lag, STALE ; --check pour monitoring",
         description=(
             "Snapshot de santé:\n"
             "  • cache tickers global (shards market×active, TTL)\n"
@@ -676,7 +886,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # --- futures (groupe) ---
     p_futures = _sub(
         "futures",
-        help="Commandes spécifiques aux futures (contrats / rollover)",
+        help="Contrats futures / rollover (cache Massive)",
         description="Sous-commandes réservées aux produits futures (contrats CME, etc.).",
         epilog="Exemple: myquantstore futures contracts --symbol ES --refresh",
     )
@@ -714,7 +924,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # --- options (groupe — scaffold) ---
     p_options = _sub(
         "options",
-        help="Commandes options (scaffold, non implémenté)",
+        help="Options (scaffold — NotImplemented)",
         description="Scaffold réservé aux options. Non implémenté (NotImplementedError).",
     )
     options_sub = p_options.add_subparsers(dest="options_command", help="Sous-commande options")
@@ -728,7 +938,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # --- tickers (référentiel /v3/reference/tickers) ---
     p_tickers = _sub(
         "tickers",
-        help="Cache référentiel tickers Massive (/v3/reference/tickers)",
+        help="Référentiel Massive tickers (refresh / types / values)",
         description=(
             "Gère le cache local du référentiel tickers Massive\n"
             "(shards market × active/inactive + types).\n"
@@ -820,7 +1030,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # --- portfolio (MPT) ---
     p_port = _sub(
         "portfolio",
-        help="Analyse de portefeuille MPT (stocks 1day)",
+        help="MPT stocks 1day : stats, corr, optim, allocate, frontier",
         description=(
             "Modern Portfolio Theory sur l'univers stocks (track 1day Yahoo).\n"
             "Returns total-return (split + dividend adjust). Optim long-only\n"
@@ -939,7 +1149,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # --- search ---
     p_search = _sub(
         "search",
-        help="Recherche locale dans le cache tickers",
+        help="Cherche dans le cache tickers local (--add → config)",
         description=(
             "Filtre le cache tickers local (pas d'appel API si cache frais).\n"
             "Utile pour trouver un symbole avant config add / fetch."
@@ -1027,40 +1237,274 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _cmd_setup_key(args: argparse.Namespace) -> int:
-    """Commande ``setup-key`` : demande la clé API et crée ``~/.config/myquantstore/.env``."""
-    env_path = get_user_env_path()
+    """Commande ``setup-key`` : écrit la clé API dans ``~/.config/myquantstore/.env``."""
+    from myquantstore.onboarding import write_api_key
 
-    # Ensure config directory exists
+    env_path = get_user_env_path()
     env_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if env_path.exists():
+    overwrite = bool(getattr(args, "yes", False))
+    if env_path.exists() and not overwrite:
         existing_content = env_path.read_text(encoding="utf-8")
-        if "MASSIVE_API_KEY=" in existing_content:
-            for line in existing_content.splitlines():
-                if line.startswith("MASSIVE_API_KEY=") and len(line) > len("MASSIVE_API_KEY="):
-                    console.print("[yellow]Une clé API existe déjà dans ~/.config/myquantstore/.env[/yellow]")
-                    confirm = input("Voulez-vous l'écraser ? (o/N) : ").strip().lower()
-                    if confirm != "o":
-                        console.print("Abandon — .env inchangé.")
-                        return 0
-                    break
+        for line in existing_content.splitlines():
+            if line.startswith("MASSIVE_API_KEY=") and len(line) > len("MASSIVE_API_KEY="):
+                console.print(f"[yellow]Une clé API existe déjà dans {env_path}[/yellow]")
+                if args.api_key is not None:
+                    console.print("[dim]Utilisez --yes pour écraser.[/dim]")
+                    return 1
+                confirm = input("Voulez-vous l'écraser ? (o/N) : ").strip().lower()
+                if confirm != "o":
+                    console.print("Abandon — .env inchangé.")
+                    return 0
+                overwrite = True
+                break
 
-    console.print("[bold]Configuration de la clé API Massive.com[/bold]")
-    api_key = getpass.getpass("Entrez votre clé API (masquée) : ").strip()
-
+    api_key = (args.api_key or "").strip()
+    if not api_key:
+        console.print("[bold]Configuration de la clé API Massive.com[/bold]")
+        api_key = getpass.getpass("Entrez votre clé API (masquée) : ").strip()
     if not api_key:
         console.print("[red]Clé API vide — abandon[/red]")
         return 1
 
     base_url = args.base_url or "https://api.massive.com"
-    content = f"MASSIVE_API_KEY={api_key}\nMASSIVE_BASE_URL={base_url}\n"
+    try:
+        write_api_key(api_key, base_url=base_url, env_path=env_path, overwrite=True)
+    except ValueError as exc:
+        console.print(f"[red]Erreur:[/red] {exc}")
+        return 1
 
-    env_path.write_text(content, encoding="utf-8")
     console.print(f"[green].env créé avec succès :[/green] {env_path}")
     console.print(f"  Clé API : {'*' * 8}{api_key[-4:]}")
     console.print(f"  Base URL : {base_url}")
     console.print("\n[dim]Le fichier .env n'est jamais committé (.gitignore).[/dim]")
     return 0
+
+
+def _cmd_init(args: argparse.Namespace) -> int:
+    """Commande ``init`` : bootstrap XDG + config."""
+    import getpass as _getpass
+
+    from myquantstore.onboarding import init_workspace
+
+    api_key = args.api_key
+    no_key = bool(args.no_key)
+    if not no_key and api_key is None and sys.stdin.isatty():
+        console.print("[bold]Clé API Massive.com[/bold] (Entrée pour ignorer)")
+        try:
+            typed = _getpass.getpass("Clé API (masquée, optionnel) : ").strip()
+        except (EOFError, KeyboardInterrupt):
+            typed = ""
+            console.print()
+        api_key = typed or None
+        if api_key is None:
+            no_key = True
+
+    try:
+        summary = init_workspace(
+            full=bool(args.full),
+            force=bool(args.force),
+            api_key=api_key,
+            base_url=args.base_url or "https://api.massive.com",
+            no_key=no_key,
+        )
+    except FileExistsError as exc:
+        console.print(f"[red]Erreur:[/red] {exc}")
+        return 1
+    except ValueError as exc:
+        console.print(f"[red]Erreur:[/red] {exc}")
+        return 1
+
+    console.print("[bold]== myquantstore init ==[/bold]")
+    if summary["config_created"]:
+        console.print(
+            f"[green]config.toml[/green] ← {summary['template']} → {summary['config_path']}"
+        )
+    elif summary["config_skipped"]:
+        console.print(
+            f"[yellow]config.toml inchangé[/yellow] ({summary['config_path']}) — --force pour écraser"
+        )
+    console.print(f"dirs : {summary['config_dir']} ; {summary['data_root']}/{{data,cache,logs}}")
+    if summary["env_created"]:
+        console.print(f"[green].env[/green] → {summary['env_path']}")
+    elif not no_key and summary.get("env_skipped"):
+        console.print(f"[dim].env existant : {summary['env_path']}[/dim]")
+    else:
+        console.print("[dim]Pas de clé API (setup-key ou init -k plus tard)[/dim]")
+
+    console.print("\n[bold]Prochaines étapes[/bold]")
+    console.print("  myquantstore doctor")
+    console.print("  myquantstore fetch --dry-run")
+    console.print("  myquantstore fetch")
+    console.print("  myquantstore schedule install   # samedi 01h00")
+    return 0
+
+
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    """Commande ``doctor`` : diagnostic install."""
+    from myquantstore.onboarding import run_doctor
+
+    report = run_doctor(ping_api=bool(getattr(args, "ping", False)))
+    console.print("[bold]== myquantstore doctor ==[/bold]")
+    for check in report.checks:
+        if check.ok:
+            mark = "[green]OK[/green]"
+        elif check.blocking:
+            mark = "[red]FAIL[/red]"
+        else:
+            mark = "[yellow]WARN[/yellow]"
+        console.print(f"  {mark}  {check.name}: {check.detail}")
+    if report.ok:
+        console.print("\n[green]Aucun problème bloquant.[/green]")
+        return 0
+    console.print("\n[bold red]Problèmes bloquants détectés.[/bold red]")
+    return 1
+
+
+def _cmd_schedule(settings: Settings | None, args: argparse.Namespace) -> int:
+    """Commande ``schedule`` : install / run / status / show / uninstall."""
+    from myquantstore.schedule import (
+        DEFAULT_CRON,
+        DEFAULT_ON_CALENDAR,
+        cron_status,
+        detect_backend,
+        install_cron,
+        install_systemd,
+        render_cron_block,
+        render_service_unit,
+        render_timer_unit,
+        resolve_binary,
+        run_scheduled_job,
+        systemd_status,
+        uninstall_cron,
+        uninstall_systemd,
+    )
+
+    sub = getattr(args, "schedule_command", None)
+    if sub is None:
+        console.print("[red]Sous-commande requise:[/red] install|run|status|show|uninstall")
+        console.print("[dim]myquantstore schedule -h[/dim]")
+        return 1
+
+    if sub == "run":
+        console.print("[bold]== schedule run ==[/bold]")
+        console.print("  1) fetch → 2) aggregate → 3) status --check")
+        rc = run_scheduled_job(
+            fetch_args=getattr(args, "fetch_args", "") or "",
+            skip_aggregate=bool(getattr(args, "skip_aggregate", False)),
+            skip_status=bool(getattr(args, "skip_status", False)),
+            main_fn=main,
+        )
+        if rc == 0:
+            console.print("[green]Job terminé avec succès.[/green]")
+        else:
+            console.print(f"[red]Job terminé avec code {rc}.[/red]")
+        return rc
+
+    if sub == "status":
+        console.print("[bold]== schedule status ==[/bold]")
+        console.print(f"  binary : {resolve_binary()}")
+        sd = systemd_status()
+        if sd.get("installed"):
+            console.print(
+                f"  systemd : installed enabled={sd.get('enabled')} "
+                f"active={sd.get('active')} next={sd.get('next') or '?'}"
+            )
+            console.print(f"    timer : {sd.get('timer_path')}")
+        else:
+            console.print("  systemd : non installé")
+        cr = cron_status()
+        if cr.get("installed"):
+            console.print(f"  cron    : {cr.get('line')}")
+        else:
+            console.print("  cron    : non installé")
+        return 0
+
+    if sub == "show":
+        backend = args.backend
+        if backend == "auto":
+            backend = detect_backend()
+        when = args.when
+        fetch_args = getattr(args, "fetch_args", "") or ""
+        binary = resolve_binary()
+        console.print(f"[bold]== schedule show ({backend}) ==[/bold]")
+        console.print(f"binary: {binary}")
+        if backend == "systemd":
+            cal = when or DEFAULT_ON_CALENDAR
+            console.print("\n--- myquantstore-fetch.service ---")
+            console.print(render_service_unit(binary=binary, fetch_args=fetch_args))
+            console.print("--- myquantstore-fetch.timer ---")
+            console.print(render_timer_unit(on_calendar=cal))
+        else:
+            sched = when or DEFAULT_CRON
+            console.print("\n--- crontab block ---")
+            console.print(render_cron_block(schedule=sched, binary=binary, fetch_args=fetch_args))
+        return 0
+
+    if sub == "install":
+        backend = args.backend
+        if backend == "auto":
+            backend = detect_backend()
+            console.print(f"[dim]backend auto → {backend}[/dim]")
+        when = args.when
+        fetch_args = getattr(args, "fetch_args", "") or ""
+        dry = bool(getattr(args, "dry_run", False))
+        try:
+            if backend == "systemd":
+                result = install_systemd(
+                    on_calendar=when or DEFAULT_ON_CALENDAR,
+                    fetch_args=fetch_args,
+                    dry_run=dry,
+                )
+                if dry:
+                    console.print(result["service"])
+                    console.print(result["timer"])
+                    console.print(f"[dim]→ {result['service_path']}[/dim]")
+                    console.print(f"[dim]→ {result['timer_path']}[/dim]")
+                else:
+                    console.print(
+                        f"[green]systemd timer installé[/green] "
+                        f"({result.get('on_calendar')}) → {result.get('timer_path')}"
+                    )
+                    console.print(
+                        "[dim]Astuce: si la machine est souvent éteinte hors session, "
+                        "`loginctl enable-linger $USER`[/dim]"
+                    )
+            else:
+                result = install_cron(
+                    schedule=when or DEFAULT_CRON,
+                    fetch_args=fetch_args,
+                    dry_run=dry,
+                )
+                if dry:
+                    console.print(result["block"])
+                else:
+                    console.print(
+                        f"[green]cron installé[/green] ({result.get('schedule')})\n"
+                        f"{result.get('block')}"
+                    )
+        except RuntimeError as exc:
+            console.print(f"[red]Erreur schedule install:[/red] {exc}")
+            return 1
+        return 0
+
+    if sub == "uninstall":
+        backend = getattr(args, "backend", "all")
+        targets = ["systemd", "cron"] if backend in ("all", "auto") else [backend]
+        for t in targets:
+            try:
+                if t == "systemd":
+                    r = uninstall_systemd()
+                    console.print(f"systemd : removed={r.get('removed')}")
+                else:
+                    r = uninstall_cron()
+                    console.print(f"cron : removed={r.get('removed')}")
+            except RuntimeError as exc:
+                console.print(f"[yellow]{t}:[/yellow] {exc}")
+        return 0
+
+    console.print(f"[red]Sous-commande inconnue:[/red] {sub}")
+    return 1
 
 
 def _cmd_config(settings: Settings, args: argparse.Namespace) -> int:

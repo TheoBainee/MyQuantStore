@@ -79,6 +79,18 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
 - CLI complète + chart serveur (dashboard `/` multi-type, miniatures SVG 1day, charts `/{type}:{symbol}`).
 - **Portfolio MPT** (`analytics/`, CLI `portfolio`) : panel stocks 1day total-return, corr/cov, optim long-only equal|min-vol|max-sharpe, allocate (lots), frontier (Polars + numpy). Chart lazy `portfolio:max-sharpe`/`min-vol` (combo base puis resample, rebase 100).
 
+### Onboarding & schedule (UX install)
+- Templates embarqués : `src/myquantstore/resources/` (`config.minimal.toml`, `config.full.toml`, `env.example`) — accessibles hors clone via `importlib.resources`.
+- **`myquantstore init`** : crée XDG config + `~/.local/share/myquantstore/{data,cache,logs}`, copie config minimale (défaut) ou `--full`, clé optionnelle (`-k` / prompt).
+- **`myquantstore doctor`** : checks Python/config/dirs/clé/binary/schedule ; exit 1 si bloquant.
+- **`setup-key --api-key KEY --yes`** : non-interactif.
+- **`myquantstore schedule`** (backends `systemd` user timer + `cron`) :
+  - `schedule run` = **fetch → aggregate → status --check** (aggregate pour régénérer le cache parquet consommé en externe).
+  - Défaut horaires : samedi 01:00 (`OnCalendar=Sat *-*-* 01:00:00` / cron `0 1 * * 6`).
+  - `install|uninstall|status|show` ; `--backend auto|systemd|cron` ; `--fetch-args`.
+  - Templates manuels : `contrib/systemd/`, `contrib/cron/`.
+  - Pas de daemon Python long-running.
+
 ### Logging & Observabilité
 - DEBUG par défaut :
   - Tous les appels API (endpoint + params, clé masquée).
@@ -88,7 +100,7 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
 - **Fraîcheur OHLCV** (`storage/coverage.py`, config `[health]`) :
   - lag calendaire = `(today - max(window_start)).days` ; STALE si > `stale_lag_days_1min` (défaut 3) / `stale_lag_days_1day` (5).
   - Warn si `|lag_1min - lag_1day| > cross_resolution_lag_days` (défaut 7).
-  - `status` affiche lag + STALE ; `status --check` exit 1 si problème (cron).
+  - `status` affiche lag + STALE ; `status --check` exit 1 si problème (cron / `schedule run`).
   - Résumé `fetch` : `latest=` / `lag=` / `⚠ STALE` (warn only — pas de soft-skip ; utiliser `--force`).
 
 ### Tests & Qualité

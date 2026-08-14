@@ -1,0 +1,16 @@
+# MyQuantStore — timer samedi 01:00 (heure locale)
+# Préférer: myquantstore schedule install
+#
+# systemctl --user enable --now myquantstore-fetch.timer
+# systemctl --user list-timers myquantstore-fetch.timer
+
+[Unit]
+Description=MyQuantStore periodic historisation timer
+
+[Timer]
+OnCalendar=Sat *-*-* 01:00:00
+Persistent=true
+Unit=myquantstore-fetch.service
+
+[Install]
+WantedBy=timers.target
