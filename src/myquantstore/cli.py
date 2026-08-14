@@ -661,7 +661,9 @@ def _build_parser() -> argparse.ArgumentParser:
             "\n"
             "Stocks: split-adjust ON par défaut (--no-split pour bruts);\n"
             "  --adjust ajoute l'ajustement dividendes.\n"
-            "Futures: --adjust = back-adjust rollover; --normalize-tick-size."
+            "Futures: --adjust = back-adjust rollover; --normalize-tick-size.\n"
+            "  Dédup timestamps ON par défaut (--no-dedup-timestamps pour\n"
+            "  garder les deux contrats au même window_start le jour de roll)."
         ),
         epilog=(
             "Exemples:\n"
@@ -727,6 +729,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-split",
         action="store_true",
         help="Stocks: garde les prix bruts (désactive l'ajustement split, ON par défaut)",
+    )
+    p_query.add_argument(
+        "--no-dedup-timestamps",
+        action="store_true",
+        help=(
+            "Futures 1min: conserve deux barres au même window_start au roll "
+            "(désactive la dédup ON par défaut ; le contrat le plus récent gagne)"
+        ),
     )
     p_query.add_argument(
         "--normalize-tick-size",
@@ -1859,6 +1869,7 @@ def _cmd_query(settings: Settings, args: argparse.Namespace) -> int:
             normalize_tick_size=args.normalize_tick_size,
             check_ticksize_accuracy=args.check_ticksize_accuracy,
             no_split=args.no_split,
+            dedup_timestamps=not args.no_dedup_timestamps,
         )
     except ValueError as e:
         console.print(f"[red]Erreur:[/red] {e}")

@@ -48,8 +48,10 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
 - Meta sidecar : inclut `resolution`, `source` (`massive` | `yahoo`)
 - Pour futures 1min : ticker = contrat (ESM5 etc.) ; pour futures 1day : ticker = root (ES, série `=F`)
 - Pour stocks/forex/indices : ticker = symbole
-- Agrégation **par résolution** (pas de logique rollover dedans) : concat dumps de la résolution, dédup keep=last, Categorical + Int32 casts.
+- Agrégation **par résolution** (pas de logique rollover dedans) : concat dumps de la résolution, dédup sur **`(window_start, ticker)`** keep=last, Categorical + Int32 casts.
 - **Invariant** : l'agrégat d'une résolution se reconstruit uniquement depuis les dumps de **cette** résolution.
+- Futures 1min : au jour de roll, l'agrégat **peut** avoir deux lignes au même `window_start` (deux `ticker`). Volontaire — clé naturelle = (timestamp, contrat).
+- `query()` déduplique **par défaut** (`dedup_timestamps=True`) : une barre par timestamp, contrat le plus récent de la chaîne. `--no-dedup-timestamps` conserve les deux. Le chart utilise ce défaut (pas de `unique` côté chart).
 - **Pas de resample 1min → day** en production (extraday = Yahoo only).
 
 ### Gestion des contrats et rollovers (futures)
@@ -57,7 +59,8 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
 - Rollover : days_before_expiry (défaut 7) → rollover_date = last_trade_date - N jours.
 - Ex : contrat expire vendredi 19 → dernier jour conservé = vendredi 12.
 - RolloverChain + RolloverSegment pour active_contract, continuous_segments, tick_size.
-- Pour query : gaps naturels conservés par défaut.
+- Fetch 1min : `window_start.gte/lte` en `YYYY-MM-DD` inclusifs sur `active_from` / `active_until` (même date de roll) → recouvrement possible des deux contrats.
+- Pour query : gaps naturels conservés ; timestamps dupliqués au roll **dédupliqués par défaut** (contrat le plus récent). `--no-dedup-timestamps` pour garder les deux.
 
 ### Corporate actions (stocks)
 - **Massive 1min** : fetch `adjusted=false` → prix bruts ; cache `corporate_actions/`.

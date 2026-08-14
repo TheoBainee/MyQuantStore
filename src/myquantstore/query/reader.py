@@ -25,6 +25,14 @@ sont disponibles :
 Pour forex/stocks/indices, on peut passer ``chain=None`` ou une
 ``SingleSymbolChain``. ``normalize_tick_size`` / ``check_ticksize_accuracy``
 requièrent une chaîne avec un ``tick_size_for_ticker`` non nul (futures).
+
+**Timestamps dupliqués (futures 1min)** : l'agrégat peut contenir deux lignes
+au même ``window_start`` (deux ``ticker``) au jour de roll. ``query()``
+déduplique **par défaut** (``dedup_timestamps=True``) après les ajustements
+(Panama voit encore les deux contrats) et le bilan tick size. Si une
+``RolloverChain`` est fournie, le contrat le plus récent de la chaîne gagne ;
+sinon ``keep="last"``. ``--no-dedup-timestamps`` conserve les deux lignes.
+Le chart s'appuie sur ce défaut (plus de ``unique`` côté chart).
 """
 
 from __future__ import annotations
@@ -85,6 +93,7 @@ def query(
     resolution: str | None = None,
     k_days: int = 1,
     week_aligned: bool = False,
+    dedup_timestamps: bool = True,
 ) -> pl.DataFrame:
     """Interroge l'historique continu d'un instrument.
 
@@ -112,8 +121,11 @@ def query(
     :param resolution: Résolution de stockage (``1min`` | ``1day``). Défaut ``1min``.
     :param k_days: Rééchantillonnage extraday en k jours (track ``1day``).
     :param week_aligned: Si True (UT ``week``), buckets ancrés lundi ISO.
+    :param dedup_timestamps: Si True (défaut), une barre par ``window_start``
+        après ajustements. Au roll, le contrat le plus récent de ``chain``
+        gagne. False = conserver les deux tickers (contrat de l'agrégat).
     :return: DataFrame Polars de l'historique (filtré, éventuellement ajusté,
-        resamplé et normalisé).
+        dédupliqué, resamplé et normalisé).
     """
     res = resolution or DEFAULT_RESOLUTION
     is_extraday = res == RESOLUTION_1DAY or timeframe_family(res) == TF_FAMILY_EXTRADAY
@@ -185,6 +197,10 @@ def query(
         bilan = check_ticksize_accuracy_fn(df, chain, settings.data_quality_trigger)
         _print_quality_bilan(str(instrument), bilan)
 
+    # --- Dédup timestamps (après adjust / bilan, avant normalize + resample) ---
+    if dedup_timestamps:
+        df = _dedup_timestamps(df, chain)
+
     # --- Normalisation tick size (à la lecture) ---
     if normalize_tick_size and chain is not None:
         df = _normalize_tick_size(df, chain)
@@ -201,6 +217,35 @@ def query(
         df = df.head(limit)
 
     return df
+
+
+def _dedup_timestamps(
+    df: pl.DataFrame,
+    chain: InstrumentChain | None,
+) -> pl.DataFrame:
+    """Une barre par ``window_start`` (jour de roll : deux contrats).
+
+    Avec une chaîne à segments (futures), le contrat le plus récent gagne.
+    Sans chaîne, ``keep="last"`` après tri sur ``window_start``.
+    """
+    if df.is_empty() or "window_start" not in df.columns:
+        return df
+
+    segments = getattr(chain, "segments", None) if chain is not None else None
+    if segments and "ticker" in df.columns:
+        rank = {seg.ticker: i for i, seg in enumerate(segments)}
+        df = df.with_columns(
+            pl.col("ticker")
+            .cast(pl.Utf8)
+            .replace_strict(rank, default=-1)
+            .alias("_roll_rank")
+        )
+        df = df.sort(["window_start", "_roll_rank"]).unique(
+            subset=["window_start"], keep="last"
+        )
+        return df.drop("_roll_rank").sort("window_start")
+
+    return df.unique(subset=["window_start"], keep="last").sort("window_start")
 
 
 def _apply_stock_split_adjustment(

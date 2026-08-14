@@ -209,7 +209,13 @@ Schéma canonique des dumps (normalisé depuis l'API) : `window_start` (Datetime
 L'agrégateur (`pipeline/aggregator.py`) est **générique** : concat des dumps,
 dédup sur `(window_start, ticker)`, cast `Categorical` (`run_id, ticker, symbol,
 instrument_type, product_code`) + `Int32` (`volume, transactions`). Aucune
-logique de rollover — le stitching continu se fait à la `query` via la chaîne.
+logique de rollover : le stitch 1min (quel contrat sur quelle fenêtre) se fait
+au **fetch**. `query()` n'applique le rollover que pour `--adjust` (Panama).
+
+Au jour de roll, l'agrégat 1min **peut** contenir deux lignes au même
+`window_start` (deux `ticker`) — clé naturelle `(timestamp, contrat)`, pas un
+bug. `query()` déduplique **par défaut** (contrat le plus récent de la
+chaîne). `--no-dedup-timestamps` conserve les deux. Le chart utilise ce défaut.
 
 ## 8. Configuration
 

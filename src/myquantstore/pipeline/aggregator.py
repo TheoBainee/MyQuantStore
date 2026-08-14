@@ -6,12 +6,22 @@ chandeliers sur ``(window_start, ticker)``, et écrit le résultat dans
 ``data/aggregate/{type}/{symbol}/{resolution}.parquet``.
 
 Cette fonction est **générique** — elle ne contient aucune logique de rollover
-(spécifique futures). Le stitching continu/rollover se fait à la query via la
-chaîne d'instrument (:mod:`myquantstore.chains`).
+(spécifique futures). Le stitch 1min se fait au **fetch** (un contrat par
+segment ``[active_from, active_until)``). La query n'applique le rollover que
+pour ``--adjust`` (Panama) via :mod:`myquantstore.chains`.
 
-**Déduplication** : ``keep="last"`` car les dumps sont lus par ordre
-chronologique des ``run_ts`` — le dernier dump contient les données les plus
-récentes (en cas de re-fetch d'un même chandelier).
+**Déduplication** : clé ``(window_start, ticker)``, ``keep="last"`` car les
+dumps sont lus par ordre chronologique des ``run_ts`` — le dernier dump
+contient les données les plus récentes (re-fetch d'un même chandelier).
+
+**Timestamps dupliqués (futures 1min)** : au jour de roll, l'ancien et le
+nouveau contrat peuvent chacun avoir une barre au même ``window_start``
+(filtres API ``gte``/``lte`` en date calendaire inclusive). Les deux lignes
+sont **conservées ici** : ce sont deux faits distincts (deux contrats). Un
+``unique(window_start)`` dans l'agrégat serait une décision de rollover
+(quel contrat gagne). La série 1-timestamp = 1-barre est un choix de
+``query()`` (``dedup_timestamps=True`` par défaut ; le contrat le plus
+récent de la chaîne gagne). ``--no-dedup-timestamps`` conserve les deux.
 
 **Cast Categorical** : ``run_id``, ``ticker``, ``symbol``, ``instrument_type``,
 ``product_code`` → ``Categorical`` (faible cardinalité, compact en Parquet).

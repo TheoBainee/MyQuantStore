@@ -108,6 +108,58 @@ class TestQuery:
         with pytest.raises(ValueError, match="chain"):
             query(es_instrument, tmp_settings, chain=None, normalize_tick_size=True)
 
+    def test_query_dedup_timestamps_default_keeps_newer_contract(
+        self, tmp_settings, es_instrument, sample_chain
+    ):
+        """Au même window_start, le contrat le plus récent de la chaîne gagne."""
+        ts = datetime(2025, 3, 7, 0, 0, 0, tzinfo=UTC)
+        save_raw_dump(
+            _make_df("ESH5", [ts], [5800.00]),
+            es_instrument,
+            "ESH5",
+            "20250307T000000",
+            tmp_settings,
+        )
+        save_raw_dump(
+            _make_df("ESM5", [ts], [5810.00]),
+            es_instrument,
+            "ESM5",
+            "20250307T000001",
+            tmp_settings,
+        )
+        aggregate(es_instrument, tmp_settings)
+
+        df = query(es_instrument, tmp_settings, sample_chain)
+        assert df.height == 1
+        assert df["ticker"][0] == "ESM5"
+        assert df["open"][0] == 5810.00
+
+    def test_query_no_dedup_timestamps_keeps_both_contracts(
+        self, tmp_settings, es_instrument, sample_chain
+    ):
+        ts = datetime(2025, 3, 7, 0, 0, 0, tzinfo=UTC)
+        save_raw_dump(
+            _make_df("ESH5", [ts], [5800.00]),
+            es_instrument,
+            "ESH5",
+            "20250307T000000",
+            tmp_settings,
+        )
+        save_raw_dump(
+            _make_df("ESM5", [ts], [5810.00]),
+            es_instrument,
+            "ESM5",
+            "20250307T000001",
+            tmp_settings,
+        )
+        aggregate(es_instrument, tmp_settings)
+
+        df = query(
+            es_instrument, tmp_settings, sample_chain, dedup_timestamps=False
+        )
+        assert df.height == 2
+        assert set(df["ticker"].to_list()) == {"ESH5", "ESM5"}
+
 
 class TestNormalizeTickSize:
     """Tests de la normalisation tick_size (--normalize-tick-size)."""

@@ -635,7 +635,7 @@ data/aggregate/
       └─ 1day.parquet             # Yahoo
 ```
 
-Un fichier par instrument × résolution. La logique de continuité/rollover se fait à la query via la chaîne.
+Un fichier par instrument × résolution. Fusion de dumps uniquement — **pas** de logique de rollover. Le stitch 1min (quel contrat est fetché sur quelle fenêtre) se fait au fetch via `RolloverChain.continuous_segments`. La query n'applique le rollover que pour `--adjust` (Panama).
 
 ### 8.6 Agrégation (`pipeline/aggregator.py`)
 
@@ -648,7 +648,11 @@ def aggregate(instrument, settings, resolution="1min") -> pl.DataFrame:
     # 5. write_aggregate(…, resolution=…, source=massive|yahoo)
 ```
 
-Dédup `keep="last"` : dumps lus par ordre chronologique des `run_ts`.
+Dédup `keep="last"` : dumps lus par ordre chronologique des `run_ts` (re-fetch du **même** contrat).
+
+**Clé naturelle = `(window_start, ticker)`**, pas `window_start` seul. Au jour de roll futures 1min, l'ancien contrat est fetché avec `window_start.lte=rollover_date` et le nouveau avec `gte=rollover_date` (dates calendaires inclusives). Les deux dumps peuvent donc contenir des barres au **même** `window_start`. L'agrégat **conserve les deux** : ce sont deux faits (deux contrats). Un `unique(window_start)` dans l'agrégat serait une décision de rollover (quel contrat gagne) ; `keep="last"` sans règle d'ordre n'est **pas** « garder le front-month ».
+
+La série 1-timestamp = 1-barre est un choix de **`query()`** (`dedup_timestamps=True` par défaut, après `--adjust` et le bilan tick size, avant normalize/resample). Si une `RolloverChain` est fournie, le contrat le plus récent de la chaîne gagne. `--no-dedup-timestamps` conserve les deux lignes. Le chart s'appuie sur ce défaut (§12bis.3). Le resample `k>1` fusionne aussi via `group_by`.
 
 ---
 
@@ -666,6 +670,9 @@ La fonction `query` accepte plusieurs flags et paramètres de transformation :
 - `check_ticksize_accuracy` (`--check-ticksize-accuracy`) : analyse la conformité des prix au tick size et **affiche un bilan** (cf §8.3), sans modifier les données.
 - `limit` : retourne les N premières lignes (`df.head(N)`). Le chart server passe `limit=None` et fait `df.tail(N)` après coup pour obtenir les candles les plus récentes.
 - `resolution` / `k_days` / `week_aligned` : track extraday Yahoo (`1day`).
+- `dedup_timestamps` (`--no-dedup-timestamps` pour désactiver) : **ON par défaut**. Une barre par `window_start` ; au roll, le contrat le plus récent de la chaîne gagne. Après `--adjust` et le bilan tick size, avant normalize/resample.
+
+`query()` déduplique **par défaut** sur `window_start`. `--no-dedup-timestamps` renvoie les doublons de roll tels quels (§8.6). L'agrégat, lui, n'est pas une série continue.
 
 **Incompatibilités** :
 - `adjust_rollover` × `normalize_tick_size` : `ValueError` (ajustement en Float64 vs Int32).
@@ -697,7 +704,7 @@ def query(
         elif instrument.type == FUTURES and chain is not None:
             df = apply_rollover_adjustment(df, chain)
 
-    # ticksize check → normalize → resample (1min ou 1day) → limit
+    # ticksize check → dedup_timestamps (défaut) → normalize → resample → limit
     if limit and limit > 0:
         df = df.head(limit)
 
@@ -992,7 +999,7 @@ Le frontend chart n'a besoin que de : `time`, OHLC, `volume`, `candle_count`. La
 
 **Colonnes éliminées** : `ticker`, `product_code`, `run_id` (type `Categorical` de Polars). Polars encode les `Categorical` en `dictionary<values=string_view>` en Arrow IPC, qui n'est pas supporté par apache-arrow JS 17.0.0 (erreur `"Unrecognized type: undefined (24)"`). Le chart n'en a pas besoin.
 
-**Déduplication des timestamps** : sur les dates de rollover, l'ancien et le nouveau contrat ont tous deux des candles au même `window_start`. L'aggregator déduplique sur `(window_start, ticker)` — pas sur `window_start` seul — donc ces doublons subsistent en 1min. `_prepare_chart_df()` applique `unique(subset=["time"], keep="last").sort("time")` pour garantir des timestamps uniques (exigé par Lightweight Charts, sinon erreur "Value is null"). Le resampling k>1 fusionne naturellement ces doublons via `group_by`, donc le problème ne se produit qu'en 1min.
+**Timestamps uniques** : `query()` déduplique déjà les rolls (§9). `_prepare_chart_df()` ne refait pas de `unique` — le chart visualise ce que `query()` retourne (défaut = une barre par timestamp). Lightweight Charts exige des timestamps uniques ; le défaut de `query()` le garantit.
 
 ### 12bis.4 Lazy loading et zoom cap
 

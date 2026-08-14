@@ -413,11 +413,8 @@ def _prepare_chart_df(df: pl.DataFrame) -> pl.DataFrame:
     if "candle_count" in df.columns:
         select_exprs.append(pl.col("candle_count").cast(pl.Int32))
 
-    chart_df = df.select(select_exprs)
-
-    # Dédupliquer sur le timestamp (dates de rollover futures : deux contrats au même window_start)
-    chart_df = chart_df.unique(subset=["time"], keep="last").sort("time")
-    return chart_df
+    # query() déduplique déjà les timestamps de roll (défaut).
+    return df.select(select_exprs).sort("time")
 
 
 def _render_dashboard_html(
