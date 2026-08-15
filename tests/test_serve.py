@@ -339,8 +339,40 @@ class TestServeCli:
         assert args.host == "0.0.0.0"
         assert args.port == 9000
 
-    def test_parser_serve_defaults(self):
+    def test_parser_serve_defaults_are_none(self):
         parser = _build_parser()
         args = parser.parse_args(["serve"])
-        assert args.host == "127.0.0.1"
-        assert args.port == 8741
+        assert args.host is None
+        assert args.port is None
+
+    def test_cmd_serve_falls_back_to_settings(self, tmp_settings, monkeypatch):
+        from myquantstore.cli import _cmd_serve
+        import argparse
+
+        captured: dict[str, object] = {}
+
+        def fake_run(settings, host="127.0.0.1", port=8741):
+            captured["host"] = host
+            captured["port"] = port
+
+        monkeypatch.setattr("myquantstore.serve.server.run_server", fake_run)
+        settings = tmp_settings.model_copy(update={"serve_host": "0.0.0.0", "serve_port": 9001})
+        args = argparse.Namespace(host=None, port=None)
+        assert _cmd_serve(settings, args) == 0
+        assert captured == {"host": "0.0.0.0", "port": 9001}
+
+    def test_cmd_serve_cli_overrides_settings(self, tmp_settings, monkeypatch):
+        from myquantstore.cli import _cmd_serve
+        import argparse
+
+        captured: dict[str, object] = {}
+
+        def fake_run(settings, host="127.0.0.1", port=8741):
+            captured["host"] = host
+            captured["port"] = port
+
+        monkeypatch.setattr("myquantstore.serve.server.run_server", fake_run)
+        settings = tmp_settings.model_copy(update={"serve_host": "127.0.0.1", "serve_port": 8741})
+        args = argparse.Namespace(host="10.0.0.2", port=9999)
+        assert _cmd_serve(settings, args) == 0
+        assert captured == {"host": "10.0.0.2", "port": 9999}

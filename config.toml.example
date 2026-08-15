@@ -139,6 +139,12 @@ mdns = false # myquantstore-chart.local
 # 90 ≈ 3 mois ; 365 ≈ YOY.
 thumbnail_lookback_days = 90
 
+[serve]
+# API HTTP query (commande `myquantstore serve`).
+# --host / --port CLI override ces valeurs si fournis.
+port = 8741
+host = "127.0.0.1"
+
 [portfolio]
 # Analyse MPT (commande `myquantstore portfolio`).
 # risk_free_rate = fallback si rf_source=static, ou si Yahoo échoue.

@@ -314,8 +314,8 @@ myquantstore chart --mdns --host 0.0.0.0
 Expose `query()` en HTTP pour un client quelconque (autre langage, autre machine, notebook) **sans** partager `data_dir` ni importer le package. Ce n'est **pas** le serveur chart et **pas** un remplacement du snapshot hebdo.
 
 ```bash
-myquantstore serve                          # http://127.0.0.1:8741
-myquantstore serve --host 0.0.0.0 --port 8741
+myquantstore serve                          # bind [serve].host:[serve].port (défaut 127.0.0.1:8741)
+myquantstore serve --host 0.0.0.0 --port 8741   # override CLI
 
 curl -o es.parquet 'http://127.0.0.1:8741/v1/query?instrument=ES'
 curl 'http://127.0.0.1:8741/v1/health?instrument=futures:ES'

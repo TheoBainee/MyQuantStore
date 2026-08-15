@@ -187,6 +187,10 @@ port = 8050
 host = "127.0.0.1"
 mdns = false
 thumbnail_lookback_days = 90   # miniatures dashboard (1day Yahoo)
+
+[serve]
+port = 8741
+host = "127.0.0.1"
 ```
 
 ### 3.2 Modèle `Settings`
@@ -886,6 +890,7 @@ Les 3 helpers se déclenchent uniquement si `level >= DEBUG` (via `isEnabledFor`
 | `myquantstore aggregate` | Régénère le cache agrégé depuis dumps bruts. Auto-déclenche `fetch` si dumps manquants. | `--instrument ES`, `--type`, `--no-cascade` |
 | `myquantstore query <instrument>` | Interroge l'historique continu. Auto-déclenche cascade type-aware si manquant. | `--start`, `--end`, `--timescale-unit min\|hour\|day\|week`, `--timescale-nb K`, `--intraday-begin/end`, `--adjust` (rollover futures / dividends stocks), `--no-split`, `--normalize-tick-size` (**incompatible avec `--adjust`**), `--check-ticksize-accuracy`, `--output`, `--limit`, `--no-cascade` |
 | `myquantstore chart [product]` | Serveur visualisation : dashboard `/` ; avec arg ouvre `/{type}:{symbol}`. Cascade 1day pour miniatures si manquant. | `--port`, `--host`, `--mdns`, `--timescale-unit`, `--timescale-nb`, `--nb-candle`, `--intraday-begin`, `--intraday-end`, `--normalize-tick-size`, `--adjust`, `--no-cascade` |
+| `myquantstore serve` | API HTTP `query()` (Parquet / Arrow). Pas de cascade, pas d'auth v1. Bind `[serve]` si flags absents. | `--host`, `--port` |
 | `myquantstore status` | Snapshot par instrument (adaptatif au type) : dumps, agrégé, listing cache, RolloverChain (futures). | `--instrument ES`, `--type` |
 
 ### 12.2 Comportements notables
@@ -1043,9 +1048,9 @@ Lightweight Charts est sous Apache-2.0 avec attribution requise. Le logo Trading
 
 ## 12ter. API query réseau (`serve/`)
 
-`myquantstore serve [--host 127.0.0.1] [--port 8741]` expose `query()` en HTTP
-pour un client quelconque (autre langage, autre machine, notebook) **sans**
+`myquantstore serve [--host] [--port]` expose `query()` en HTTP pour un client quelconque (autre langage, autre machine, notebook) **sans**
 partager `data_dir` ni importer le package.
+`--host` / `--port` absents → `[serve].host` / `[serve].port` (défauts 127.0.0.1:8741).
 
 Ce n'est **pas** le serveur chart (`/api/candles`) et **pas** un remplacement
 du snapshot hebdo (le backtest reste sur fichiers). Aucune cascade / fetch :

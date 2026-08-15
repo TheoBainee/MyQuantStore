@@ -885,15 +885,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_serve.add_argument(
         "--host",
-        default="127.0.0.1",
-        help="Adresse de bind (défaut: 127.0.0.1 — LAN explicite via --host)",
+        default=None,
+        help="Adresse de bind (défaut: config [serve].host, souvent 127.0.0.1)",
     )
     p_serve.add_argument(
         "--port",
         type=int,
-        default=8741,
+        default=None,
         metavar="N",
-        help="Port HTTP (défaut: 8741)",
+        help="Port HTTP (défaut: config [serve].port, souvent 8741)",
     )
 
     # --- status ---
@@ -2296,8 +2296,8 @@ def _cmd_serve(settings: Settings, args: argparse.Namespace) -> int:
     """Commande ``serve`` : API HTTP ``query()`` (pas de cascade, pas de fetch)."""
     from myquantstore.serve.server import run_server
 
-    host = args.host
-    port = args.port
+    host = args.host or settings.serve_host
+    port = args.port or settings.serve_port
     console.print(f"[green]MyQuantStore Serve[/green] — http://{host}:{port}")
     console.print("  GET /v1/health       fraîcheur (200 / 503)")
     console.print("  GET /v1/instruments  config + résolutions d'agrégat")

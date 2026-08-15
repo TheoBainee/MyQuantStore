@@ -204,6 +204,11 @@ class Settings(BaseSettings):
     # Fenêtre des miniatures dashboard (jours calendaires, track 1day Yahoo).
     thumbnail_lookback_days: int = 90
 
+    # --- Serve / API query (config.toml: [serve]) ---
+    # Bind de ``myquantstore serve`` si --host / --port absents.
+    serve_port: int = 8741
+    serve_host: str = "127.0.0.1"
+
     # --- Portfolio / MPT (config.toml: [portfolio]) ---
     portfolio_risk_free_rate: float = 0.04  # annualisé (fallback / source static)
     # "static" = portfolio_risk_free_rate ; "yahoo" = ^IRX (13w T-bill) 1day
@@ -712,6 +717,7 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
     logging_section = toml_data.get("logging", {})
     display = toml_data.get("display", {})
     chart = toml_data.get("chart", {})
+    serve_cfg = toml_data.get("serve", {})
     portfolio_cfg = toml_data.get("portfolio", {})
     yahoo_cfg = toml_data.get("yahoo", {})
     health_cfg = toml_data.get("health", {})
@@ -774,6 +780,9 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
             "thumbnail_lookback_days": chart.get(
                 "thumbnail_lookback_days", data["thumbnail_lookback_days"]
             ),
+            # [serve]
+            "serve_port": serve_cfg.get("port", data["serve_port"]),
+            "serve_host": serve_cfg.get("host", data["serve_host"]),
             # [portfolio]
             "portfolio_risk_free_rate": portfolio_cfg.get(
                 "risk_free_rate", data["portfolio_risk_free_rate"]

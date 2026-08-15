@@ -60,6 +60,10 @@ history_months = 24
         port = 8050
         host = "127.0.0.1"
 
+[serve]
+port = 9001
+host = "0.0.0.0"
+
 [tests]
 data_quality_trigger = 0.1
 
@@ -96,6 +100,8 @@ level = "INFO"
         assert settings.display_max_rows == 10
         assert settings.chart_port == 8050
         assert settings.chart_host == "127.0.0.1"
+        assert settings.serve_port == 9001
+        assert settings.serve_host == "0.0.0.0"
 
     def test_settings_defaults(self):
         """Les valeurs par défaut de Settings sont correctes (alignées config.toml.example)."""
@@ -128,6 +134,8 @@ level = "INFO"
         assert settings.max_visible_candles == 100000
         assert settings.chart_port == 8050
         assert settings.chart_host == "127.0.0.1"
+        assert settings.serve_port == 8741
+        assert settings.serve_host == "127.0.0.1"
         assert settings.data_dir == "~/.local/share/myquantstore/data"
         assert settings.cache_dir == "~/.local/share/myquantstore/cache"
         assert settings.log_dir == "~/.local/share/myquantstore/logs"

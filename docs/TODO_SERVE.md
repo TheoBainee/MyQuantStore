@@ -66,10 +66,12 @@ Ce n'est **pas** :
 ## 2. CLI
 
 ```
-myquantstore serve [--host 127.0.0.1] [--port 8741]
+myquantstore serve [--host] [--port]
 ```
 
-- uvicorn oneshot, bind **localhost** par défaut (LAN explicite via `--host`).
+- uvicorn oneshot. `--host` / `--port` absents → `[serve].host` / `[serve].port`
+  (défauts 127.0.0.1:8741). LAN explicite via `--host` ou `host` en conf.
+- bind **localhost** par défaut.
 - Pas d'unité systemd installée par défaut.
 - Pas d'auth en v1 (LAN only).
 - **Jamais** de cascade / fetch depuis l'API : agrégat absent → 404.
