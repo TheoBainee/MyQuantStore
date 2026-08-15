@@ -13,6 +13,7 @@ Commandes disponibles :
 - ``myquantstore fetch`` : historise les OHLCV (cascade auto, multi-type).
 - ``myquantstore aggregate`` : régénère le cache agrégé (cascade auto, générique).
 - ``myquantstore query <instrument>`` : interroge l'historique (cascade auto).
+- ``myquantstore serve`` : API HTTP ``query()`` (Parquet / Arrow, pas de cascade).
 - ``myquantstore chart [instrument]`` : serveur de visualisation interactive.
 - ``myquantstore futures contracts`` : liste/rafraîchit le cache contrats futures.
 - ``myquantstore options contracts`` : scaffold (``NotImplementedError``).
@@ -190,6 +191,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_query(settings, args)
     elif args.command == "chart":
         return _cmd_chart(settings, args)
+    elif args.command == "serve":
+        return _cmd_serve(settings, args)
     elif args.command == "portfolio":
         return _cmd_portfolio(settings, args)
     elif args.command == "status":
@@ -857,6 +860,40 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-split",
         action="store_true",
         help="Stocks: prix bruts (désactive split-adjust par défaut)",
+    )
+
+    # --- serve ---
+    p_serve = _sub(
+        "serve",
+        help="API HTTP query() (Parquet / Arrow, localhost, pas de cascade)",
+        description=(
+            "Démarre un serveur HTTP (FastAPI / uvicorn) qui expose query()\n"
+            "pour un client quelconque (autre langage, autre machine, notebook)\n"
+            "sans partager data_dir ni importer le package.\n"
+            "\n"
+            "Ce n'est PAS le serveur chart (/api/candles) et PAS un remplacement\n"
+            "du snapshot hebdo. Aucune cascade / fetch réseau : agrégat absent → 404.\n"
+            "Pas d'auth en v1 (bind localhost par défaut)."
+        ),
+        epilog=(
+            "Exemples:\n"
+            "  myquantstore serve\n"
+            "  myquantstore serve --host 0.0.0.0 --port 8741\n"
+            "  curl -o es.parquet 'http://127.0.0.1:8741/v1/query?instrument=ES'\n"
+            "  curl 'http://127.0.0.1:8741/v1/health?instrument=futures:ES'"
+        ),
+    )
+    p_serve.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Adresse de bind (défaut: 127.0.0.1 — LAN explicite via --host)",
+    )
+    p_serve.add_argument(
+        "--port",
+        type=int,
+        default=8741,
+        metavar="N",
+        help="Port HTTP (défaut: 8741)",
     )
 
     # --- status ---
@@ -2250,6 +2287,25 @@ def _cmd_chart(settings: Settings, args: argparse.Namespace) -> int:
 
     try:
         run_server(settings, instruments_map, chains_map, defaults, port, host, mdns)
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Arrêt du serveur...[/yellow]")
+    return 0
+
+
+def _cmd_serve(settings: Settings, args: argparse.Namespace) -> int:
+    """Commande ``serve`` : API HTTP ``query()`` (pas de cascade, pas de fetch)."""
+    from myquantstore.serve.server import run_server
+
+    host = args.host
+    port = args.port
+    console.print(f"[green]MyQuantStore Serve[/green] — http://{host}:{port}")
+    console.print("  GET /v1/health       fraîcheur (200 / 503)")
+    console.print("  GET /v1/instruments  config + résolutions d'agrégat")
+    console.print("  GET /v1/query        Parquet (Accept: Arrow IPC optionnel)")
+    console.print("  Pas de cascade / fetch — agrégat absent → 404")
+    console.print("  Ctrl+C pour arrêter")
+    try:
+        run_server(settings, host=host, port=port)
     except KeyboardInterrupt:
         console.print("\n[yellow]Arrêt du serveur...[/yellow]")
     return 0

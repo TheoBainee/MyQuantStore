@@ -222,6 +222,7 @@ myquantstore config add TSLA NVDA                         # lookup type via cach
 | `myquantstore aggregate [--instrument ES] [--type futures] [--no-cascade]` | Régénère le cache agrégé (générique) |
 | `myquantstore query <instrument> [--type] [--start] [--end] [--timescale-unit min\|hour] [--timescale-nb K] [--intraday-begin HH:MM] [--intraday-end HH:MM] [--adjust] [--no-split] [--normalize-tick-size] [--check-ticksize-accuracy] [--output] [--limit] [--no-cascade]` | Interroge l'historique continu |
 | `myquantstore chart [instrument] [--type] [--port] [--host] [--mdns] [--timescale-unit] [--timescale-nb] [--nb-candle] [--intraday-begin] [--intraday-end] [--normalize-tick-size] [--no-split] [--adjust] [--no-cascade]` | Serveur de visualisation interactive |
+| `myquantstore serve [--host] [--port]` | API HTTP `query()` (Parquet / Arrow, localhost, pas de cascade) |
 | `myquantstore portfolio {stats\|corr\|cov\|optimize\|allocate\|frontier} [-i …] [--value] [--objective equal\|min-vol\|max-sharpe] [--export]` | MPT stocks 1day + lots ; chart `portfolio:*` (voir [docs/PORTFOLIO.md](docs/PORTFOLIO.md)) |
 | `myquantstore futures contracts [--symbol ES] [--refresh] [--active-only]` | Liste/rafraîchit le cache contrats futures |
 | `myquantstore options contracts` | Scaffold options (`NotImplementedError`) |
@@ -308,6 +309,24 @@ myquantstore chart --mdns --host 0.0.0.0
 - Backend alternatif FinPlot (desktop only)
 - Streaming temps réel (websockets, plans payants)
 
+### API query réseau (`myquantstore serve`)
+
+Expose `query()` en HTTP pour un client quelconque (autre langage, autre machine, notebook) **sans** partager `data_dir` ni importer le package. Ce n'est **pas** le serveur chart et **pas** un remplacement du snapshot hebdo.
+
+```bash
+myquantstore serve                          # http://127.0.0.1:8741
+myquantstore serve --host 0.0.0.0 --port 8741
+
+curl -o es.parquet 'http://127.0.0.1:8741/v1/query?instrument=ES'
+curl 'http://127.0.0.1:8741/v1/health?instrument=futures:ES'
+curl 'http://127.0.0.1:8741/v1/instruments'
+```
+
+- `GET /v1/query` : mêmes params que `query` (`instrument` requis, `type`, `start`/`end`, `timescale_unit`/`timescale_nb`, `adjust`, `no_split`, `dedup_timestamps` défaut true, `intraday_*`, `normalize_tick_size`). Réponse Parquet ; `Accept: application/vnd.apache.arrow.stream` → Arrow IPC.
+- `GET /v1/health` : 200 OK / **503** si STALE ou agrégé manquant. Un client sérieux appelle health d'abord ; `/v1/query` sert quand même les données STALE.
+- Aucune cascade / fetch réseau (agrégat absent → 404). Pas d'auth en v1 (bind localhost).
+- Détail : [docs/TODO_SERVE.md](docs/TODO_SERVE.md), [docs/TECHNICAL_DESIGN.md](docs/TECHNICAL_DESIGN.md) §12ter.
+
 ## Structure du projet
 
 ```
@@ -318,7 +337,8 @@ MyQuantStore/
 ├─ docs/
 │  ├─ TECHNICAL_DESIGN.md       # Documentation technique
 │  ├─ MULTI_TYPE.md             # Architecture multi-type
-│  └─ PORTFOLIO.md              # MPT / portfolio CLI + chart lazy
+│  ├─ PORTFOLIO.md              # MPT / portfolio CLI + chart lazy
+│  └─ TODO_SERVE.md             # Spec `myquantstore serve` (API query)
 ├─ src/myquantstore/
 │  ├─ cli.py                    # CLI argparse (multi-type + portfolio)
 │  ├─ config.py                 # pydantic-settings + tomllib (XDG)
@@ -340,6 +360,7 @@ MyQuantStore/
 │  ├─ query/                    # reader, resampler, adjust (split/div/rollover)
 │  ├─ analytics/                # MPT portfolio (panel, optim, allocate, synthetic)
 │  ├─ chart/                    # FastAPI + Lightweight Charts + dashboard
+│  ├─ serve/                    # FastAPI API query réseau (pas le chart)
 │  └─ py.typed
 └─ tests/                       # pytest + respx
 ```
@@ -382,6 +403,19 @@ Après quoi `myquantstore fe<Tab>` complète automatiquement en `myquantstore fe
 ## Documentation
 
 - `docs/TECHNICAL_DESIGN.md` — documentation technique complète (architecture, configuration, API, rollover, cascade, etc.).
+- `docs/MULTI_TYPE.md` — architecture multi-type (5 types d'instruments, endpoints par type, sémantique `--adjust`/`--no-split`, layout de stockage, statut d'implémentation).
+- `docs/PORTFOLIO.md` — analyse MPT (`portfolio stats|corr|optimize|allocate|frontier`) et chart lazy `portfolio:*`.
+
+## Confidentialité et sécurité
+
+> **Rappel MassiVe Terms of Service** : le code source de ce projet est libre (MIT), mais les Market Data récupérées via l'API Massive.com sont soumises aux [Market Data Terms](https://massive.com/legal/market-data-terms-of-service) et ne peuvent être redistribuées. Ce dépôt ne sert qu'à partager l'outil de collecte, pas les données elles-mêmes.
+
+## Licence
+
+Le code de MyQuantStore est sous licence **MIT** (voir [LICENSE](./LICENSE)).
+
+La librairie [TradingView Lightweight Charts](https://www.tradingview.com/lightweight-charts/) utilisée par la commande `myquantstore chart` est sous licence **Apache 2.0** (voir [src/myquantstore/chart/NOTICE](./src/myquantstore/chart/NOTICE) et [LICENSE-2.0.txt](./src/myquantstore/chart/LICENSE-2.0.txt)).
+lète (architecture, configuration, API, rollover, cascade, etc.).
 - `docs/MULTI_TYPE.md` — architecture multi-type (5 types d'instruments, endpoints par type, sémantique `--adjust`/`--no-split`, layout de stockage, statut d'implémentation).
 - `docs/PORTFOLIO.md` — analyse MPT (`portfolio stats|corr|optimize|allocate|frontier`) et chart lazy `portfolio:*`.
 

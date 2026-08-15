@@ -1041,6 +1041,32 @@ Lightweight Charts est sous Apache-2.0 avec attribution requise. Le logo Trading
 
 ---
 
+## 12ter. API query réseau (`serve/`)
+
+`myquantstore serve [--host 127.0.0.1] [--port 8741]` expose `query()` en HTTP
+pour un client quelconque (autre langage, autre machine, notebook) **sans**
+partager `data_dir` ni importer le package.
+
+Ce n'est **pas** le serveur chart (`/api/candles`) et **pas** un remplacement
+du snapshot hebdo (le backtest reste sur fichiers). Aucune cascade / fetch :
+agrégat absent → 404. Pas d'unité systemd, pas d'auth en v1 (LAN only).
+
+| Méthode | Path | Rôle |
+|---|---|---|
+| `GET` | `/v1/health` | `assess_instrument_health` (tous, ou `?instrument=` / `?type=`). HTTP 200 si OK, **503** si `has_problems`. |
+| `GET` | `/v1/instruments` | Config + résolutions d'agrégat présentes (`list_aggregate_resolutions`). |
+| `GET` | `/v1/query` | Équivalent `myquantstore query` / `query()`. |
+
+`/v1/query` : params alignés sur `query()` (`instrument` requis, `type`, `start`/`end`,
+`timescale_unit`/`timescale_nb`, `adjust`, `no_split`, `dedup_timestamps` défaut true,
+`intraday_begin`/`intraday_end`, `normalize_tick_size`). Réponse défaut Parquet
+(`application/vnd.apache.parquet`) ; `Accept: application/vnd.apache.arrow.stream`
+→ Arrow IPC. 400 validation, 404 agrégat / instrument. 503 seulement sur `/v1/health`
+(un client peut relire des données STALE). Mapping CLI → `query()` réutilisé
+(`_timescale_to_query_params`). Détail / hors v1 : `docs/TODO_SERVE.md`.
+
+---
+
 ## 13. Tests (`tests/`)
 
 ### 13.1 Couverture
@@ -1060,6 +1086,7 @@ Lightweight Charts est sous Apache-2.0 avec attribution requise. Le logo Trading
 | `test_reader.py` | `adjust_rollover=False` retourne chaîne ; `True` applique back-adjust futures / dividends stocks ; filtres `start`/`end` ; `normalize_tick_size` Int32 ; `check_ticksize_accuracy` bilan ; incompatibilité `normalize_tick_size` × `adjust_rollover` ; resampling / intraday |
 | `test_resampler.py` | Cohérence du bucketing (anchor par session) ; drop des partiels de fin ; gaps conservés (`candle_count < k`) ; agrégation OHLCV (open=first, high=max, low=min, close=last) ; k=1 noop ; k invalide (`< 1`) ; intraday normal (`begin < end`) ; intraday wrap-around (`begin > end`) ; `begin == end` lève `ValueError` ; cohérence intraday+resample ; drop partial avec intraday |
 | `test_chart_server.py` | Dashboard `/` multi-type ; page HTML + bouton maison ; static JS ; `/api/candles` Arrow IPC ; `before` ; timescale 7min ; unit invalide → 400 ; `/api/meta` ; `/api/thumbnail` SVG ; product inconnu → 404 ; sparklines unit |
+| `test_serve.py` | `/v1/health` 200/503 ; `/v1/instruments` ; `/v1/query` Parquet/Arrow 200/400/404 ; dédup roll défaut / `dedup_timestamps=false` ; CLI `--host`/`--port` |
 | `test_cascade.py` | Cascade `query` → `aggregate` → `fetch` → `contracts` ; `--no-cascade` erreur ; logs WARNING ; status avant cascade |
 | `test_cli.py` | Toutes commandes, flags, format output, `status` affiche `RolloverChain` ; `query --normalize-tick-size` ; `query --adjust` ; `query --check-ticksize-accuracy` (bilan + exit code) ; incompatibilité `--normalize-tick-size` × `--adjust` ; `query --timescale-unit`/`--timescale-nb` ; `chart` commande |
 

@@ -80,6 +80,7 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
 - Agrégateur générique (polars unique + casts).
 - Query : reader + resampler + adjust (split).
 - CLI complète + chart serveur (dashboard `/` multi-type, miniatures SVG 1day, charts `/{type}:{symbol}`).
+- **`myquantstore serve`** : API HTTP `query()` (`/v1/health`, `/v1/instruments`, `/v1/query`) — Parquet / Arrow, pas de cascade, pas d'auth v1. Spec : `docs/TODO_SERVE.md`.
 - **Portfolio MPT** (`analytics/`, CLI `portfolio`) : panel stocks 1day total-return, corr/cov, optim long-only equal|min-vol|max-sharpe, allocate (lots), frontier (Polars + numpy). Chart lazy `portfolio:max-sharpe`/`min-vol` (combo base puis resample, rebase 100).
 
 ### Onboarding & schedule (UX install)
@@ -122,7 +123,7 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
 ### Documentation
 - https://massive.com/docs/llms.txt
 - README.md, docs/TECHNICAL_DESIGN.md, docs/MULTI_TYPE.md, docs/PORTFOLIO.md
-- **TODO** `myquantstore serve` (API query réseau, pas le chart) : `docs/TODO_SERVE.md` — backtest hebdo = snapshot Parquet, pas cette API.
+- **`myquantstore serve` est implémenté** (API query réseau, pas le chart) : `docs/TODO_SERVE.md` (hors v1 encore ouvert). Backtest hebdo = snapshot Parquet, pas cette API.
 - **`--adjust` est implémenté** (futures back-adjusted rollover + stocks dividends après splits). Ne pas le documenter comme stub/NotImplemented.
 - Maintenir AGENTS.md à jour (ce fichier est la source de vérité pour les consignes de dev).
 

@@ -1,7 +1,10 @@
 # TODO — `myquantstore serve` (API query réseau)
 
-Statut : **pas commencé**. Reprise d'une discussion (2026-08) : interfaçage backtest
+Statut : **fait (v1)**. Reprise d'une discussion (2026-08) : interfaçage backtest
 weekend NQ/ES + consommation depuis un autre langage / une autre machine.
+
+Implémenté : `src/myquantstore/serve/`, CLI `myquantstore serve`, tests
+`tests/test_serve.py`. Chart et `schedule` inchangés. Hors v1 : voir §4.
 
 Le backtest hebdo **n'attend pas** cette API. Il utilise un snapshot Parquet
 (voir §0). `serve` est un produit à part, pour le query ad-hoc sur le réseau.
