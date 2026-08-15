@@ -196,21 +196,24 @@ def create_chart_app(
         else:
             instrument = instruments[product]
             chain = chains.get(product)
-            df = query(
+            resampled = (resolution == "1day" and k_days > 1) or (
+                resolution != "1day" and k_minutes > 1
+            )
+            time_col = "bucket_start" if resampled else "window_start"
+            wanted = [time_col, "open", "high", "low", "close", "volume"]
+            if resampled:
+                wanted.append("candle_count")
+            df = _query_chart_ohlcv(
                 instrument,
                 settings,
                 chain,
-                end=before_dt,
+                before_dt=before_dt,
                 k_minutes=k_minutes,
                 k_days=k_days,
                 week_aligned=(timescale_unit == "week"),
                 resolution=resolution,
-                intraday_begin=defaults.intraday_begin if resolution != "1day" else None,
-                intraday_end=defaults.intraday_end if resolution != "1day" else None,
-                normalize_tick_size=defaults.normalize_tick_size if resolution != "1day" else False,
-                adjust_rollover=defaults.adjust_rollover,
-                no_split=defaults.no_split,
-                limit=None,
+                defaults=defaults,
+                include_cols=wanted,
             )
 
         if df.is_empty():
@@ -388,6 +391,50 @@ def _timescale_to_params(unit: str, nb: int) -> tuple[str, int, int]:
         status_code=400,
         detail=f"timescale_unit '{unit}' non implémenté. Unités: min, hour, day, week.",
     )
+
+
+
+def _query_chart_ohlcv(
+    instrument,
+    settings,
+    chain,
+    *,
+    before_dt,
+    k_minutes,
+    k_days,
+    week_aligned,
+    resolution,
+    defaults,
+    include_cols,
+):
+    """query() pour le chart, via include_cols (retire les colonnes optionnelles absentes)."""
+    wanted = list(include_cols)
+    kwargs = dict(
+        end=before_dt,
+        k_minutes=k_minutes,
+        k_days=k_days,
+        week_aligned=week_aligned,
+        resolution=resolution,
+        intraday_begin=defaults.intraday_begin if resolution != "1day" else None,
+        intraday_end=defaults.intraday_end if resolution != "1day" else None,
+        normalize_tick_size=defaults.normalize_tick_size if resolution != "1day" else False,
+        adjust_rollover=defaults.adjust_rollover,
+        no_split=defaults.no_split,
+        limit=None,
+    )
+    try:
+        return query(instrument, settings, chain, include_cols=wanted, **kwargs)
+    except ValueError as exc:
+        msg = str(exc)
+        if "include_cols" not in msg:
+            raise
+        # "Colonnes inconnues pour include_cols: volume (disponibles: ...)"
+        missing_part = msg.split("include_cols:", 1)[-1].split("(disponibles", 1)[0]
+        missing = {c.strip() for c in missing_part.split(",") if c.strip()}
+        reduced = [c for c in wanted if c not in missing]
+        if not reduced or reduced == wanted:
+            raise
+        return query(instrument, settings, chain, include_cols=reduced, **kwargs)
 
 
 def _prepare_chart_df(df: pl.DataFrame) -> pl.DataFrame:

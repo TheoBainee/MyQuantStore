@@ -376,3 +376,91 @@ class TestServeCli:
         args = argparse.Namespace(host="10.0.0.2", port=9999)
         assert _cmd_serve(settings, args) == 0
         assert captured == {"host": "10.0.0.2", "port": 9999}
+
+    def test_help_documents_query_params(self):
+        parser = _build_parser()
+        serve = None
+        for action in parser._subparsers._group_actions:
+            for name, sub in action.choices.items():
+                if name == "serve":
+                    serve = sub
+        assert serve is not None
+        text = serve.format_help()
+        assert "normalize_tick_size=true" in text
+        assert "include_cols=" in text
+        assert "true/false" in text
+        assert "/v1/query" in text
+        assert "/v1/instruments" in text
+
+class TestServeQueryExtras:
+    def test_include_cols_filters(self, tmp_settings, es_instrument, sample_contracts_df):
+        from datetime import UTC, datetime
+
+        ts = [datetime(2025, 6, 1, 9, 30, 0, tzinfo=UTC)]
+        _seed_1min(es_instrument, tmp_settings, ticker="ESM5", timestamps=ts, prices=[4500.0])
+        _write_contracts_cache(tmp_settings, sample_contracts_df)
+        app = create_serve_app(tmp_settings)
+        client = TestClient(app)
+        resp = client.get(
+            "/v1/query",
+            params={"instrument": "ES", "include_cols": "window_start,open,close"},
+        )
+        assert resp.status_code == 200
+        df = pl.read_parquet(BytesIO(resp.content))
+        assert df.columns == ["window_start", "open", "close"]
+
+    def test_include_cols_unknown_400(self, tmp_settings, es_instrument, sample_contracts_df):
+        from datetime import UTC, datetime
+
+        ts = [datetime(2025, 6, 1, 9, 30, 0, tzinfo=UTC)]
+        _seed_1min(es_instrument, tmp_settings, ticker="ESM5", timestamps=ts, prices=[4500.0])
+        _write_contracts_cache(tmp_settings, sample_contracts_df)
+        app = create_serve_app(tmp_settings)
+        client = TestClient(app)
+        resp = client.get(
+            "/v1/query",
+            params={"instrument": "ES", "include_cols": "window_start,not_a_column"},
+        )
+        assert resp.status_code == 400
+        assert "include_cols" in resp.json()["detail"]
+
+    def test_normalize_tick_size_true(self, tmp_settings, es_instrument, sample_contracts_df):
+        from datetime import UTC, datetime
+
+        ts = [datetime(2025, 6, 1, 9, 30, 0, tzinfo=UTC)]
+        _seed_1min(es_instrument, tmp_settings, ticker="ESM5", timestamps=ts, prices=[4500.0])
+        _write_contracts_cache(tmp_settings, sample_contracts_df)
+        app = create_serve_app(tmp_settings)
+        client = TestClient(app)
+        resp = client.get(
+            "/v1/query",
+            params={"instrument": "ES", "normalize_tick_size": "true"},
+        )
+        assert resp.status_code == 200
+        df = pl.read_parquet(BytesIO(resp.content))
+        assert df.schema["open"] == pl.Int32
+        assert df["open"][0] == 18000  # 4500 / 0.25
+
+
+class TestServeInstrumentsFutures:
+    def test_futures_extras_from_local_cache(
+        self, tmp_settings, es_instrument, sample_contracts_df
+    ):
+        from datetime import UTC, datetime
+
+        ts = [datetime(2025, 6, 1, 9, 30, 0, tzinfo=UTC)]
+        _seed_1min(es_instrument, tmp_settings, ticker="ESM5", timestamps=ts, prices=[4500.0])
+        _write_contracts_cache(tmp_settings, sample_contracts_df)
+        settings = tmp_settings.model_copy(update={"futures": ["ES"]})
+        app = create_serve_app(settings)
+        client = TestClient(app)
+        resp = client.get("/v1/instruments")
+        assert resp.status_code == 200
+        items = {row["key"]: row for row in resp.json()["instruments"]}
+        es = items["futures:ES"]
+        assert es["trade_tick_size"] == 0.25
+        assert "ESM5" in es["tickers"]
+        assert es["current_ticker"] is not None
+        assert es["last_trade_date"] is not None
+        assert isinstance(es["days_to_maturity"], int)
+

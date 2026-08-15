@@ -160,6 +160,28 @@ class TestQuery:
         assert df.height == 2
         assert set(df["ticker"].to_list()) == {"ESH5", "ESM5"}
 
+    def test_include_cols_keeps_requested_order(
+        self, tmp_settings, es_instrument, sample_chain, setup_aggregate
+    ):
+        df = query(
+            es_instrument,
+            tmp_settings,
+            sample_chain,
+            include_cols=["close", "window_start", "open"],
+        )
+        assert df.columns == ["close", "window_start", "open"]
+
+    def test_include_cols_unknown_raises(
+        self, tmp_settings, es_instrument, sample_chain, setup_aggregate
+    ):
+        with pytest.raises(ValueError, match="include_cols"):
+            query(
+                es_instrument,
+                tmp_settings,
+                sample_chain,
+                include_cols=["window_start", "not_a_column"],
+            )
+
 
 class TestNormalizeTickSize:
     """Tests de la normalisation tick_size (--normalize-tick-size)."""

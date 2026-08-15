@@ -1064,7 +1064,9 @@ agrégat absent → 404. Pas d'unité systemd, pas d'auth en v1 (LAN only).
 
 `/v1/query` : params alignés sur `query()` (`instrument` requis, `type`, `start`/`end`,
 `timescale_unit`/`timescale_nb`, `adjust`, `no_split`, `dedup_timestamps` défaut true,
-`intraday_begin`/`intraday_end`, `normalize_tick_size`). Réponse défaut Parquet
+`intraday_begin`/`intraday_end`, `normalize_tick_size=true|false`, `include_cols`).
+Colonne inconnue → 400. `/v1/instruments` ajoute pour les futures le tick, les
+tickers d'agrégat, le contrat courant et sa maturité (cache local). Réponse défaut Parquet
 (`application/vnd.apache.parquet`) ; `Accept: application/vnd.apache.arrow.stream`
 → Arrow IPC. 400 validation, 404 agrégat / instrument. 503 seulement sur `/v1/health`
 (un client peut relire des données STALE). Mapping CLI → `query()` réutilisé

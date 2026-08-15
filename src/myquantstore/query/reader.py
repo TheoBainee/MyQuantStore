@@ -20,6 +20,8 @@ sont disponibles :
   ``chain`` avec ``tick_size_for_ticker``).
 - ``check_ticksize_accuracy`` (``--check-ticksize-accuracy``) : analyse la
   conformité des prix au tick size (read-only). Futures uniquement.
+- ``include_cols`` (``--include-cols``) : restreint les colonnes renvoyées.
+  Toute colonne absente lève ``ValueError``.
 
 **Multi-type** : ``chain`` est optionnel (:class:`myquantstore.chains.InstrumentChain`).
 Pour forex/stocks/indices, on peut passer ``chain=None`` ou une
@@ -94,6 +96,7 @@ def query(
     k_days: int = 1,
     week_aligned: bool = False,
     dedup_timestamps: bool = True,
+    include_cols: list[str] | None = None,
 ) -> pl.DataFrame:
     """Interroge l'historique continu d'un instrument.
 
@@ -124,6 +127,8 @@ def query(
     :param dedup_timestamps: Si True (défaut), une barre par ``window_start``
         après ajustements. Au roll, le contrat le plus récent de ``chain``
         gagne. False = conserver les deux tickers (contrat de l'agrégat).
+    :param include_cols: Si fourni, ne conserve que ces colonnes (ordre conservé).
+        Toute colonne absente lève ``ValueError``.
     :return: DataFrame Polars de l'historique (filtré, éventuellement ajusté,
         dédupliqué, resamplé et normalisé).
     """
@@ -215,6 +220,16 @@ def query(
     # --- Limit ---
     if limit is not None and limit > 0:
         df = df.head(limit)
+
+    if include_cols is not None:
+        missing = [c for c in include_cols if c not in df.columns]
+        if missing:
+            raise ValueError(
+                "Colonnes inconnues pour include_cols: "
+                + ", ".join(missing)
+                + f" (disponibles: {', '.join(df.columns)})"
+            )
+        df = df.select(include_cols)
 
     return df
 

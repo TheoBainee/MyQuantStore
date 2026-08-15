@@ -764,6 +764,15 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="N",
         help="Max lignes affichées stdout (override display_max_rows; n'altère pas --output)",
     )
+    p_query.add_argument(
+        "--include-cols",
+        default=None,
+        metavar="COLS",
+        help=(
+            "Colonnes à conserver (CSV, ex: window_start,open,high,low,close). "
+            "Erreur si une colonne est absente."
+        ),
+    )
     p_query.add_argument("--no-cascade", action="store_true", help=_NO_CASCADE_HELP)
 
     # --- chart ---
@@ -865,24 +874,65 @@ def _build_parser() -> argparse.ArgumentParser:
     # --- serve ---
     p_serve = _sub(
         "serve",
-        help="API HTTP query() (Parquet / Arrow, localhost, pas de cascade)",
+        help="API HTTP locale : lire l'historique OHLCV (Parquet / Arrow)",
         description=(
-            "Démarre un serveur HTTP (FastAPI / uvicorn) qui expose query()\n"
-            "pour un client quelconque (autre langage, autre machine, notebook)\n"
-            "sans partager data_dir ni importer le package.\n"
+            "Démarre un serveur HTTP local qui sert l'historique déjà agrégé\n"
+            "sur le disque (même résultat que `myquantstore query`).\n"
             "\n"
-            "Ce n'est PAS le serveur chart (/api/candles) et PAS un remplacement\n"
-            "du snapshot hebdo. Aucune cascade / fetch réseau : agrégat absent → 404.\n"
-            "Pas d'auth en v1 (bind localhost par défaut)."
+            "Utile pour un notebook, un autre langage, ou une autre machine\n"
+            "sans partager le dossier data ni installer le package.\n"
+            "\n"
+            "Ce serveur ne télécharge rien (pas de fetch Massive/Yahoo).\n"
+            "S'il n'y a pas d'agrégé : HTTP 404. Pas d'authentification (v1).\n"
+            "Bind par défaut : config [serve] (souvent 127.0.0.1:8741).\n"
+            "\n"
+            "Endpoints :\n"
+            "  GET /v1/health         fraîcheur (200 OK / 503 si STALE)\n"
+            "  GET /v1/instruments    liste + extras futures (tick, maturité)\n"
+            "  GET /v1/query          historique OHLCV (Parquet par défaut)\n"
+            "\n"
+            "Booléens HTTP : passer true/false (pas un flag nu).\n"
+            "Ex: normalize_tick_size=true  —  PAS  normalize_tick_size seul."
         ),
         epilog=(
-            "Exemples:\n"
+            "Démarrer le serveur :\n"
             "  myquantstore serve\n"
             "  myquantstore serve --host 0.0.0.0 --port 8741\n"
+            "\n"
+            "Santé / listing :\n"
+            "  curl 'http://127.0.0.1:8741/v1/health'\n"
+            "  curl 'http://127.0.0.1:8741/v1/health?instrument=ES'\n"
+            "  curl 'http://127.0.0.1:8741/v1/instruments'\n"
+            "\n"
+            "Query — équivalents des flags `myquantstore query` :\n"
+            "  # instrument requis (symbole ou type:symbol)\n"
             "  curl -o es.parquet 'http://127.0.0.1:8741/v1/query?instrument=ES'\n"
-            "  curl 'http://127.0.0.1:8741/v1/health?instrument=futures:ES'"
+            "  curl -o aapl.parquet 'http://127.0.0.1:8741/v1/query?instrument=stocks:AAPL'\n"
+            "  # type= si le symbole est ambigu\n"
+            "  curl -o x.parquet 'http://127.0.0.1:8741/v1/query?instrument=EURUSD&type=forex'\n"
+            "  # plage (YYYY-MM-DD ou ISO datetime)\n"
+            "  curl -o es.parquet 'http://127.0.0.1:8741/v1/query?instrument=ES&start=2025-01-01&end=2025-06-30'\n"
+            "  # UT : min/hour = 1min Massive ; day/week = 1day Yahoo\n"
+            "  curl -o es5.parquet 'http://127.0.0.1:8741/v1/query?instrument=ES&timescale_unit=min&timescale_nb=5'\n"
+            "  curl -o aapl_w.parquet 'http://127.0.0.1:8741/v1/query?instrument=AAPL&timescale_unit=week&timescale_nb=1'\n"
+            "  # session (les deux ou aucun)\n"
+            "  curl -o nq.parquet 'http://127.0.0.1:8741/v1/query?instrument=NQ&intraday_begin=09:30&intraday_end=16:00'\n"
+            "  # futures : prix en ticks (Int32) — true/false obligatoire\n"
+            "  curl -o es_ticks.parquet 'http://127.0.0.1:8741/v1/query?instrument=ES&normalize_tick_size=true'\n"
+            "  # futures Panama / stocks dividendes\n"
+            "  curl -o es_adj.parquet 'http://127.0.0.1:8741/v1/query?instrument=ES&adjust=true'\n"
+            "  # stocks : prix bruts (sans split)\n"
+            "  curl -o aapl_raw.parquet 'http://127.0.0.1:8741/v1/query?instrument=AAPL&no_split=true'\n"
+            "  # roll : garder les deux contrats au même timestamp\n"
+            "  curl -o es_both.parquet 'http://127.0.0.1:8741/v1/query?instrument=ES&dedup_timestamps=false'\n"
+            "  # colonnes uniquement (erreur 400 si un nom est inconnu)\n"
+            "  curl -o es.parquet 'http://127.0.0.1:8741/v1/query?instrument=ES&include_cols=window_start,open,high,low,close'\n"
+            "  # Arrow IPC au lieu de Parquet\n"
+            "  curl -o es.arrow -H 'Accept: application/vnd.apache.arrow.stream' \\\n"
+            "    'http://127.0.0.1:8741/v1/query?instrument=ES'"
         ),
     )
+
     p_serve.add_argument(
         "--host",
         default=None,
@@ -1772,6 +1822,14 @@ def _cmd_aggregate(settings: Settings, args: argparse.Namespace) -> int:
     return 0
 
 
+def _parse_include_cols(raw: str | None) -> list[str] | None:
+    """Parse ``--include-cols`` / query string CSV. None/vide = toutes les colonnes."""
+    if raw is None:
+        return None
+    cols = [c.strip() for c in raw.split(",") if c.strip()]
+    return cols or None
+
+
 def _timescale_to_query_params(unit: str, nb: int) -> tuple[str, int, int]:
     """Retourne ``(resolution, k_minutes, k_days)`` pour query/chart."""
     from myquantstore.instruments import RESOLUTION_1DAY, RESOLUTION_1MIN
@@ -1907,6 +1965,7 @@ def _cmd_query(settings: Settings, args: argparse.Namespace) -> int:
             check_ticksize_accuracy=args.check_ticksize_accuracy,
             no_split=args.no_split,
             dedup_timestamps=not args.no_dedup_timestamps,
+            include_cols=_parse_include_cols(getattr(args, "include_cols", None)),
         )
     except ValueError as e:
         console.print(f"[red]Erreur:[/red] {e}")

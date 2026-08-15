@@ -322,9 +322,12 @@ curl 'http://127.0.0.1:8741/v1/health?instrument=futures:ES'
 curl 'http://127.0.0.1:8741/v1/instruments'
 ```
 
-- `GET /v1/query` : mêmes params que `query` (`instrument` requis, `type`, `start`/`end`, `timescale_unit`/`timescale_nb`, `adjust`, `no_split`, `dedup_timestamps` défaut true, `intraday_*`, `normalize_tick_size`). Réponse Parquet ; `Accept: application/vnd.apache.arrow.stream` → Arrow IPC.
+- `GET /v1/query` : mêmes params que `query` (`instrument` requis, `type`, `start`/`end`, `timescale_unit`/`timescale_nb`, `adjust`, `no_split`, `dedup_timestamps` défaut true, `intraday_*`, `normalize_tick_size=true|false`, `include_cols=col1,col2`). Réponse Parquet ; `Accept: application/vnd.apache.arrow.stream` → Arrow IPC. Une colonne inconnue → 400.
 - `GET /v1/health` : 200 OK / **503** si STALE ou agrégé manquant. Un client sérieux appelle health d'abord ; `/v1/query` sert quand même les données STALE.
+- `GET /v1/instruments` : liste + pour les futures `trade_tick_size`, `tickers` de l'agrégé, `current_ticker`, `last_trade_date`, `days_to_maturity` (cache local, pas d'appel API).
+- Booléens HTTP : `true`/`false` (ex: `normalize_tick_size=true`). Un flag nu ne marche pas.
 - Aucune cascade / fetch réseau (agrégat absent → 404). Pas d'auth en v1 (bind localhost).
+- Aide curls : `myquantstore serve -h`.
 - Détail : [docs/TODO_SERVE.md](docs/TODO_SERVE.md), [docs/TECHNICAL_DESIGN.md](docs/TECHNICAL_DESIGN.md) §12ter.
 
 ## Structure du projet

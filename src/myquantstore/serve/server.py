@@ -73,14 +73,15 @@ def create_serve_app(settings: Settings) -> FastAPI:
     async def get_instruments() -> dict[str, Any]:
         items = []
         for inst in settings.all_instruments():
-            items.append(
-                {
-                    "key": inst.key,
-                    "type": inst.type.value,
-                    "symbol": inst.symbol,
-                    "resolutions": list_aggregate_resolutions(inst, settings),
-                }
-            )
+            item: dict[str, Any] = {
+                "key": inst.key,
+                "type": inst.type.value,
+                "symbol": inst.symbol,
+                "resolutions": list_aggregate_resolutions(inst, settings),
+            }
+            if inst.type == InstrumentType.FUTURES:
+                item.update(_futures_extras(inst, settings))
+            items.append(item)
         return {"instruments": items}
 
     @app.get("/v1/query")
@@ -98,6 +99,7 @@ def create_serve_app(settings: Settings) -> FastAPI:
         intraday_begin: str | None = Query(None),
         intraday_end: str | None = Query(None),
         normalize_tick_size: bool = Query(False),
+        include_cols: str | None = Query(None),
     ) -> Response:
         try:
             inst = _resolve_instrument(settings, instrument, type)
@@ -115,6 +117,9 @@ def create_serve_app(settings: Settings) -> FastAPI:
         start_dt = _parse_datetime(start, "start")
         end_dt = _parse_datetime(end, "end")
         begin_t, end_t = _parse_intraday(intraday_begin, intraday_end)
+        from myquantstore.cli import _parse_include_cols
+
+        cols = _parse_include_cols(include_cols)
 
         from myquantstore.cli import _timescale_to_query_params
 
@@ -159,6 +164,7 @@ def create_serve_app(settings: Settings) -> FastAPI:
                 normalize_tick_size=normalize_tick_size,
                 no_split=no_split,
                 dedup_timestamps=dedup_timestamps,
+                include_cols=cols,
             )
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -330,3 +336,39 @@ def _health_payload(health: InstrumentHealth) -> dict[str, Any]:
             for issue in health.issues
         ],
     }
+
+def _futures_extras(instrument: Instrument, settings: Settings) -> dict[str, Any]:
+    """Infos futures depuis le cache contrats + agrégé local (aucun appel API)."""
+    from datetime import UTC, datetime
+
+    extras: dict[str, Any] = {
+        "trade_tick_size": None,
+        "tickers": [],
+        "current_ticker": None,
+        "last_trade_date": None,
+        "days_to_maturity": None,
+    }
+    chain = _local_chain(instrument, settings)
+    today = datetime.now(UTC).date()
+    if chain is not None:
+        current = chain.active_contract(today)
+        extras["current_ticker"] = current
+        if current:
+            extras["trade_tick_size"] = chain.tick_size_for_ticker(current)
+            seg = chain.segment_for_ticker(current)
+            if seg is not None:
+                extras["last_trade_date"] = seg.last_trade_date.isoformat()
+                extras["days_to_maturity"] = (seg.last_trade_date - today).days
+
+    tickers: set[str] = set()
+    for res in list_aggregate_resolutions(instrument, settings):
+        try:
+            from myquantstore.storage.aggregate_cache import read_aggregate
+
+            df = read_aggregate(instrument, settings, resolution=res)
+        except FileNotFoundError:
+            continue
+        if "ticker" in df.columns and df.height:
+            tickers.update(str(t) for t in df["ticker"].unique().to_list())
+    extras["tickers"] = sorted(tickers)
+    return extras

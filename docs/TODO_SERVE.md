@@ -87,7 +87,7 @@ Le chart (`chart/server.py`) **ne change pas**.
 | Méthode | Path | Rôle |
 |---|---|---|
 | `GET` | `/v1/health` | `assess_instrument_health` (tous, ou `?instrument=NQ` / `?instrument=futures:NQ`). HTTP 200 si OK, **503** si `has_problems`. Corps JSON : lag, STALE, issues. |
-| `GET` | `/v1/instruments` | Instruments de la config + résolutions d'agrégat présentes (`list_aggregate_resolutions`). |
+| `GET` | `/v1/instruments` | Config + résolutions. Futures : `trade_tick_size`, `tickers`, `current_ticker`, `last_trade_date`, `days_to_maturity` (cache local). |
 | `GET` | `/v1/query` | Équivalent `myquantstore query` / `query()`. |
 
 ### `/v1/query` — paramètres (query string)
@@ -105,7 +105,8 @@ Alignés sur `query()` / la CLI :
 | `no_split` | false | Stocks bruts |
 | `dedup_timestamps` | **true** | false = deux tickers au roll |
 | `intraday_begin` / `intraday_end` | None | `HH:MM`, les deux ou aucun |
-| `normalize_tick_size` | false | Incompatible avec `adjust` → 400 |
+| `normalize_tick_size` | false | Incompatible avec `adjust` → 400. HTTP : `true`/`false`. |
+| `include_cols` | None | CSV de colonnes. Toute colonne absente → 400. |
 
 Pas de `limit` « head oldest » (piège actuel de `query()`). Si un plafond est
 utile plus tard : `tail` des N plus récentes, documenté comme tel — ou rien en v1.
