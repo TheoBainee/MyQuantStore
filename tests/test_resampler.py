@@ -58,7 +58,7 @@ class TestResampleCoherence:
     """Cohérence du bucketing entre sessions (grille ancrée)."""
 
     def test_resample_coherence(self):
-        """2 sessions k=7 → mêmes bucket_start (relatifs à l'ancre de session)."""
+        """2 sessions k=7 → mêmes window_start (relatifs à l'ancre de session)."""
         # Session A: 10 candles à partir de 09:30
         starts_a = [datetime(2026, 7, 10, 9, 30 + i) for i in range(10)]
         df_a = _make_session_df(date(2026, 7, 10), starts_a)
@@ -69,18 +69,18 @@ class TestResampleCoherence:
         df = pl.concat([df_a, df_b])
         result = resample_ohlcv(df, k_minutes=7)
 
-        # Les bucket_start doivent être identiques (au jour près) pour chaque session
+        # Les window_start doivent être identiques (au jour près) pour chaque session
         buckets_a = (
             result.filter(pl.col("session_end_date") == date(2026, 7, 10))
-            .sort("bucket_start")
-            .select(pl.col("bucket_start").dt.time())
+            .sort("window_start")
+            .select(pl.col("window_start").dt.time())
             .to_series()
             .to_list()
         )
         buckets_b = (
             result.filter(pl.col("session_end_date") == date(2026, 7, 11))
-            .sort("bucket_start")
-            .select(pl.col("bucket_start").dt.time())
+            .sort("window_start")
+            .select(pl.col("window_start").dt.time())
             .to_series()
             .to_list()
         )
@@ -105,7 +105,7 @@ class TestResampleDropEndPartial:
 
         # 10 candles k=7 → 1 bucket complet (7) + 1 partiel (3) droppé
         assert result.height == 1
-        bucket_time = result["bucket_start"][0].time()
+        bucket_time = result["window_start"][0].time()
         assert bucket_time == time(9, 30)
         assert result["candle_count"][0] == 7
 
@@ -128,10 +128,10 @@ class TestResampleKeepGapPartials:
         # Le bucket 09:37 + 7 = 09:44 → check session_end : max(window_start)+1 = 09:44
         # 09:44 <= 09:44 → conservé
         assert result.height == 2
-        result_sorted = result.sort("bucket_start")
-        assert result_sorted["bucket_start"][0].time() == time(9, 30)
+        result_sorted = result.sort("window_start")
+        assert result_sorted["window_start"][0].time() == time(9, 30)
         assert result_sorted["candle_count"][0] == 7
-        assert result_sorted["bucket_start"][1].time() == time(9, 37)
+        assert result_sorted["window_start"][1].time() == time(9, 37)
         assert result_sorted["candle_count"][1] == 5
 
 
@@ -252,7 +252,7 @@ class TestIntradayCoherence:
     """Cohérence du bucketing avec filtrage intraday."""
 
     def test_intraday_coherence(self):
-        """2 sessions intraday k=7 → mêmes bucket_start (09:30, 09:37)."""
+        """2 sessions intraday k=7 → mêmes window_start (09:30, 09:37)."""
         # Session A: 09:30-09:39 (10 candles)
         starts_a = [datetime(2026, 7, 10, 9, 30 + i) for i in range(10)]
         df_a = _make_session_df(date(2026, 7, 10), starts_a)
@@ -266,15 +266,15 @@ class TestIntradayCoherence:
 
         buckets_a = (
             result.filter(pl.col("session_end_date") == date(2026, 7, 10))
-            .sort("bucket_start")
-            .select(pl.col("bucket_start").dt.time())
+            .sort("window_start")
+            .select(pl.col("window_start").dt.time())
             .to_series()
             .to_list()
         )
         buckets_b = (
             result.filter(pl.col("session_end_date") == date(2026, 7, 11))
-            .sort("bucket_start")
-            .select(pl.col("bucket_start").dt.time())
+            .sort("window_start")
+            .select(pl.col("window_start").dt.time())
             .to_series()
             .to_list()
         )
@@ -299,7 +299,7 @@ class TestIntradayDropPartial:
 
         # 10 candles k=7 → 1 bucket (09:30-09:36), 09:37 droppé (09:37+7=09:44 > 09:39)
         assert result.height == 1
-        assert result["bucket_start"][0].time() == time(9, 30)
+        assert result["window_start"][0].time() == time(9, 30)
         assert result["candle_count"][0] == 7
 
 
@@ -327,15 +327,15 @@ class TestWraparoundCoherence:
         # Les buckets doivent être cohérents entre les 2 sessions
         buckets_a = (
             result.filter(pl.col("session_end_date") == sd_a)
-            .sort("bucket_start")
-            .select(pl.col("bucket_start").dt.time())
+            .sort("window_start")
+            .select(pl.col("window_start").dt.time())
             .to_series()
             .to_list()
         )
         buckets_b = (
             result.filter(pl.col("session_end_date") == sd_b)
-            .sort("bucket_start")
-            .select(pl.col("bucket_start").dt.time())
+            .sort("window_start")
+            .select(pl.col("window_start").dt.time())
             .to_series()
             .to_list()
         )

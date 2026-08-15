@@ -66,7 +66,7 @@ def test_k_days_2():
     # 10 days → 5 full buckets of 2
     assert out.height == 5
     assert out["candle_count"].to_list() == [2] * 5
-    assert "bucket_start" in out.columns
+    assert "window_start" in out.columns
 
 
 def test_partial_dropped():

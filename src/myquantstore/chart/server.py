@@ -199,8 +199,7 @@ def create_chart_app(
             resampled = (resolution == "1day" and k_days > 1) or (
                 resolution != "1day" and k_minutes > 1
             )
-            time_col = "bucket_start" if resampled else "window_start"
-            wanted = [time_col, "open", "high", "low", "close", "volume"]
+            wanted = ["window_start", "open", "high", "low", "close", "volume"]
             if resampled:
                 wanted.append("candle_count")
             df = _query_chart_ohlcv(
@@ -444,10 +443,8 @@ def _prepare_chart_df(df: pl.DataFrame) -> pl.DataFrame:
     On élimine les colonnes ``Categorical`` (non supportées par apache-arrow JS)
     et on caste les timestamps en ``ms`` + le volume en ``Int32``.
     """
-    time_col = "bucket_start" if "bucket_start" in df.columns else "window_start"
-
     select_exprs: list[pl.Expr] = [
-        pl.col(time_col).cast(pl.Datetime("ms")).alias("time"),
+        pl.col("window_start").cast(pl.Datetime("ms")).alias("time"),
         pl.col("open").cast(pl.Float64),
         pl.col("high").cast(pl.Float64),
         pl.col("low").cast(pl.Float64),

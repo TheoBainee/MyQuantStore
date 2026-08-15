@@ -63,12 +63,11 @@ def _load_leg_ohlcv(
     )
     if df.is_empty():
         raise ValueError(f"{inst.key}: aucune barre {resolution}")
-    time_col = "bucket_start" if "bucket_start" in df.columns else "window_start"
-    cols = [time_col, "open", "high", "low", "close"]
+    cols = ["window_start", "open", "high", "low", "close"]
     has_vol = "volume" in df.columns
     if has_vol:
         cols.append("volume")
-    out = df.select(cols).rename({time_col: "window_start"})
+    out = df.select(cols)
     # naive timestamps pour join
     out = out.with_columns(pl.col("window_start").dt.replace_time_zone(None))
     return out.sort("window_start")
@@ -205,16 +204,8 @@ def build_portfolio_ohlcv(
     # Resample après combo (jamais avant)
     if resolution == RESOLUTION_1MIN and k_minutes > 1:
         basket = resample_ohlcv(basket, k_minutes)
-        if "bucket_start" in basket.columns and "window_start" not in basket.columns:
-            basket = basket.rename({"bucket_start": "window_start"})
-        elif "bucket_start" in basket.columns:
-            basket = basket.drop("window_start").rename({"bucket_start": "window_start"})
     elif resolution == RESOLUTION_1DAY and k_days > 1:
         basket = resample_extraday(basket, k_days, week_aligned=week_aligned)
-        if "bucket_start" in basket.columns and "window_start" not in basket.columns:
-            basket = basket.rename({"bucket_start": "window_start"})
-        elif "bucket_start" in basket.columns:
-            basket = basket.drop("window_start").rename({"bucket_start": "window_start"})
 
     logger.info(
         f"Panier synthétique: {len(w)} legs × {basket.height} barres "

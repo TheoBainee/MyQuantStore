@@ -1978,7 +1978,7 @@ def _cmd_query(settings: Settings, args: argparse.Namespace) -> int:
         df.write_parquet(args.output)
         console.print(f"[green]Écrit:[/green] {args.output} ({df.height} lignes)")
     else:
-        sort_col = "bucket_start" if "bucket_start" in df.columns else "session_end_date"
+        sort_col = "window_start" if "window_start" in df.columns else "session_end_date"
         # --limit : plafond d'affichage uniquement (comme display_max_rows)
         _render_df(df, settings, sort_col=sort_col, max_rows=args.limit)
 

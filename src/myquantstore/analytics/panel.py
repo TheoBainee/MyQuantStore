@@ -123,10 +123,9 @@ def build_price_panel(
             skipped.append(inst.symbol)
             continue
 
-        time_col = "bucket_start" if "bucket_start" in df.columns else "window_start"
         one = (
             df.select(
-                pl.col(time_col).dt.date().alias("date"),
+                pl.col("window_start").dt.date().alias("date"),
                 pl.col("close").cast(pl.Float64).alias(inst.symbol),
             )
             .group_by("date")

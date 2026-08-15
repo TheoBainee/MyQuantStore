@@ -734,11 +734,11 @@ Polars `group_by_dynamic` ancre la grille à l'epoch (1970-01-01), pas au début
    - **Avec intraday** : `anchor = session_end_date + intraday_begin` (ou `(session_end_date - 1) + intraday_begin` pour le wrap-around, car la session commence la veille).
    - **Sans intraday** : `anchor = min(window_start)` par session (le premier candle de la session).
 
-2. **Bucket** : pour chaque candle, `bucket_id = floor((window_start - anchor) / k)` et `bucket_start = anchor + bucket_id * k`.
+2. **Bucket** : pour chaque candle, `bucket_id = floor((window_start - anchor) / k)` ; le timestamp du bucket (`window_start`) = `anchor + bucket_id * k`.
 
-3. **Agrégation** : `group_by([session_end_date, bucket_start])` avec `open=first, high=max, low=min, close=last, volume=sum, transactions=sum, dollar_volume=sum`. La colonne `candle_count` compte le nombre de candles 1min agrégés dans chaque bucket.
+3. **Agrégation** : `group_by([session_end_date, window_start])` avec `open=first, high=max, low=min, close=last, volume=sum, transactions=sum, dollar_volume=sum`. La colonne `candle_count` compte le nombre de candles 1min agrégés dans chaque bucket.
 
-4. **Drop des partiels de fin** : un bucket est partiel si `bucket_start + k > session_end`. On drop ces buckets pour garantir que tous les buckets font exactement k minutes.
+4. **Drop des partiels de fin** : un bucket est partiel si `window_start + k > session_end`. On drop ces buckets pour garantir que tous les buckets font exactement k minutes.
 
 ### 9bis.3 Gaps intra-session
 
@@ -997,7 +997,7 @@ Le frontend chart n'a besoin que de : `time`, OHLC, `volume`, `candle_count`. La
 
 | Colonne | Type source (Polars) | Type cible (Arrow IPC) | Raison du cast |
 |---|---|---|---|
-| `time` | `window_start` ou `bucket_start` (`Datetime[ns]`) | `timestamp[ms]` | `timestamp[us]` (microsecondes) mal supporté par apache-arrow JS 17.0.0 |
+| `time` | `window_start` (`Datetime[ns]`, y compris après resample) | `timestamp[ms]` | `timestamp[us]` (microsecondes) mal supporté par apache-arrow JS 17.0.0 |
 | `open`/`high`/`low`/`close` | `Float64` | `double` | OK (pas de cast) |
 | `volume` | `Int32` (depuis aggregator) | `int32` | `Int64` → `BigInt` en JS, que Lightweight Charts n'accepte pas |
 | `candle_count` | `Int32` (si resamplé k > 1) | `int32` | OK |

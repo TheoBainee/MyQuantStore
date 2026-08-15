@@ -24,14 +24,15 @@ session, puis de bucketer relativement à cette ancre.
      premier candle de la session).
 
 2. **Bucket** : pour chaque candle, ``bucket_id = floor((window_start - anchor) / k)``
-   et ``bucket_start = anchor + bucket_id * k``.
+   et le timestamp du bucket = ``anchor + bucket_id * k`` (réécrit dans
+   ``window_start``).
 
-3. **Agrégation** : ``group_by([session_end_date, bucket_start])`` avec
+3. **Agrégation** : ``group_by([session_end_date, window_start])`` avec
    ``open=first, high=max, low=min, close=last, volume=sum, transactions=sum,
    dollar_volume=sum``. La colonne ``candle_count`` compte le nombre de
    candles 1min agrégés dans chaque bucket.
 
-4. **Drop des partiels de fin** : un bucket est partiel si ``bucket_start + k
+4. **Drop des partiels de fin** : un bucket est partiel si ``window_start + k
    > session_end``. On drop ces buckets pour garantir que tous les buckets
    font exactement k minutes.
 
@@ -173,17 +174,17 @@ def resample_ohlcv(
         )
         df = df.join(anchors, on="session_end_date")
 
-    # --- 2. Calculer bucket_id et bucket_start ---
+    # --- 2. Calculer bucket_id puis réécrire window_start = début du bucket ---
     df = df.with_columns(
         ((pl.col("window_start") - pl.col("anchor")).dt.total_minutes() // k_minutes)
         .cast(pl.Int64)
         .alias("bucket_id")
     )
     df = df.with_columns(
-        (pl.col("anchor") + pl.duration(minutes=k_minutes) * pl.col("bucket_id")).alias("bucket_start")
+        (pl.col("anchor") + pl.duration(minutes=k_minutes) * pl.col("bucket_id")).alias("window_start")
     )
 
-    # --- 3. Agréger par (session_end_date, bucket_start) ---
+    # --- 3. Agréger par (session_end_date, window_start) ---
     agg_exprs = [
         pl.col("open").first(),
         pl.col("high").max(),
@@ -202,16 +203,16 @@ def resample_ohlcv(
     if "settlement_price" in df.columns:
         agg_exprs.append(pl.col("settlement_price").first())
 
-    agg = df.group_by(["session_end_date", "bucket_start"]).agg(agg_exprs)
+    agg = df.group_by(["session_end_date", "window_start"]).agg(agg_exprs)
 
     # Joindre session_end pour filtrer les partiels
     session_ends = df.select(["session_end_date", "session_end"]).unique()
     agg = agg.join(session_ends, on="session_end_date")
 
     # --- 4. Drop des partiels de fin de session ---
-    # Un bucket est partiel si bucket_start + k > session_end
+    # Un bucket est partiel si window_start + k > session_end
     before_drop = agg.height
-    agg = agg.filter(pl.col("bucket_start") + pl.duration(minutes=k_minutes) <= pl.col("session_end"))
+    agg = agg.filter(pl.col("window_start") + pl.duration(minutes=k_minutes) <= pl.col("session_end"))
     dropped = before_drop - agg.height
     if dropped > 0:
         logger.info(f"Drop de {dropped} bucket(s) partiel(s) de fin de session")
@@ -222,8 +223,8 @@ def resample_ohlcv(
     # Cast candle_count en Int32 (cohérent avec les autres colonnes entières)
     agg = agg.with_columns(pl.col("candle_count").cast(pl.Int32))
 
-    # Trier par bucket_start (chronologique)
-    agg = agg.sort("bucket_start")
+    # Trier par window_start (chronologique)
+    agg = agg.sort("window_start")
 
     logger.info(
         f"Resampling terminé: {agg.height} buckets {k_minutes}min "
@@ -326,7 +327,7 @@ def resample_extraday(
         pl.col("low").min(),
         pl.col("close").last(),
         pl.col("session_end_date").min().alias("session_end_date"),
-        pl.col("window_start").min().alias("bucket_start"),
+        pl.col("window_start").min().alias("window_start"),
         pl.len().alias("candle_count"),
     ]
     for col in ("volume", "transactions", "dollar_volume"):
@@ -348,7 +349,7 @@ def resample_extraday(
     if dropped > 0:
         logger.info(f"Drop de {dropped} bucket(s) extraday partiel(s)")
 
-    agg = agg.with_columns(pl.col("candle_count").cast(pl.Int32)).sort("bucket_start")
+    agg = agg.with_columns(pl.col("candle_count").cast(pl.Int32)).sort("window_start")
     if "bucket_id" in agg.columns:
         agg = agg.drop("bucket_id")
 
