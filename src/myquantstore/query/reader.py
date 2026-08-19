@@ -349,7 +349,7 @@ def _normalize_tick_size(df: pl.DataFrame, chain: InstrumentChain) -> pl.DataFra
     for ticker in tickers:
         tick = chain.tick_size_for_ticker(ticker)
         if tick <= 0:
-            logger.debug(f"tick_size=0 pour {ticker} — skip normalisation (type non-futures)")
+            logger.warning(f"tick_size=0 pour {ticker} — skip normalisation (type non-futures)")
             continue
 
         for col in _PRICE_COLS:

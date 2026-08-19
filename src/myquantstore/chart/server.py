@@ -44,6 +44,7 @@ from myquantstore.analytics.portfolio_service import (
 )
 from myquantstore.analytics.synthetic import build_portfolio_ohlcv
 from myquantstore.chains import InstrumentChain
+from myquantstore.chart.overlay import list_overlays, load_overlay
 from myquantstore.chart.thumbnails import (
     build_dashboard_cards,
     get_thumbnail_svg,
@@ -111,6 +112,7 @@ def create_chart_app(
         timescale_unit: str,
         timescale_nb: int,
         before_dt: datetime | None,
+        after_dt: datetime | None = None,
     ) -> pl.DataFrame:
         assert portfolio_service is not None
         try:
@@ -127,6 +129,7 @@ def create_chart_app(
                 weights,
                 settings,
                 resolution=base_res,
+                start=after_dt.replace(tzinfo=None) if after_dt and after_dt.tzinfo else after_dt,
                 end=before_dt.replace(tzinfo=None) if before_dt and before_dt.tzinfo else before_dt,
                 k_minutes=k_minutes if base_res == "1min" else 1,
                 k_days=k_days if base_res == "1day" else 1,
@@ -179,11 +182,13 @@ def create_chart_app(
             description="Nombre max de chandeliers à retourner",
         ),
         before: str | None = Query(None, description="Chandeliers avant cette date (ISO 8601)"),
+        after: str | None = Query(None, description="Chandeliers après cette date (ISO 8601)"),
     ) -> Response:
         if not _known_product(product):
             raise HTTPException(status_code=404, detail=f"Instrument '{product}' non configuré")
 
         before_dt = _parse_before(before)
+        after_dt = _parse_before(after)
         resolution, k_minutes, k_days = _timescale_to_params(timescale_unit, timescale_nb)
 
         if is_portfolio_product(product):
@@ -192,6 +197,7 @@ def create_chart_app(
                 timescale_unit=timescale_unit,
                 timescale_nb=timescale_nb,
                 before_dt=before_dt,
+                after_dt=after_dt,
             )
         else:
             instrument = instruments[product]
@@ -207,6 +213,7 @@ def create_chart_app(
                 settings,
                 chain,
                 before_dt=before_dt,
+                after_dt=after_dt,
                 k_minutes=k_minutes,
                 k_days=k_days,
                 week_aligned=(timescale_unit == "week"),
@@ -226,7 +233,7 @@ def create_chart_app(
         chart_df.write_ipc(buffer)
         logger.debug(
             f"API /candles: product={product} res={resolution} k_min={k_minutes} "
-            f"k_days={k_days} limit={limit} before={before} -> {chart_df.height} candles, "
+            f"k_days={k_days} limit={limit} before={before} after={after} -> {chart_df.height} candles, "
             f"{len(buffer.getvalue())} bytes"
         )
         return Response(content=buffer.getvalue(), media_type="application/octet-stream")
@@ -298,6 +305,24 @@ def create_chart_app(
             "last_date": last_date,
             "total_candles": df.height,
         }
+
+    @app.get("/api/overlays")
+    async def get_overlays(product: str = Query(...)) -> list[dict[str, Any]]:
+        return list_overlays(settings.overlay_dir, product)
+
+    @app.get("/api/overlay/{stem}")
+    async def get_overlay(
+        stem: str,
+        id: str | None = Query(None, alias="id"),
+    ) -> dict[str, Any]:
+        try:
+            return load_overlay(settings.overlay_dir, stem, id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"backtest_id inconnu: {exc}") from exc
 
     @app.get("/{instrument_key}", response_class=HTMLResponse)
     async def chart_page(instrument_key: str) -> HTMLResponse:
@@ -399,6 +424,7 @@ def _query_chart_ohlcv(
     chain,
     *,
     before_dt,
+    after_dt=None,
     k_minutes,
     k_days,
     week_aligned,
@@ -408,19 +434,20 @@ def _query_chart_ohlcv(
 ):
     """query() pour le chart, via include_cols (retire les colonnes optionnelles absentes)."""
     wanted = list(include_cols)
-    kwargs = dict(
-        end=before_dt,
-        k_minutes=k_minutes,
-        k_days=k_days,
-        week_aligned=week_aligned,
-        resolution=resolution,
-        intraday_begin=defaults.intraday_begin if resolution != "1day" else None,
-        intraday_end=defaults.intraday_end if resolution != "1day" else None,
-        normalize_tick_size=defaults.normalize_tick_size if resolution != "1day" else False,
-        adjust_rollover=defaults.adjust_rollover,
-        no_split=defaults.no_split,
-        limit=None,
-    )
+    kwargs = {
+        "start": after_dt,
+        "end": before_dt,
+        "k_minutes": k_minutes,
+        "k_days": k_days,
+        "week_aligned": week_aligned,
+        "resolution": resolution,
+        "intraday_begin": defaults.intraday_begin if resolution != "1day" else None,
+        "intraday_end": defaults.intraday_end if resolution != "1day" else None,
+        "normalize_tick_size": defaults.normalize_tick_size if resolution != "1day" else False,
+        "adjust_rollover": defaults.adjust_rollover,
+        "no_split": defaults.no_split,
+        "limit": None,
+    }
     try:
         return query(instrument, settings, chain, include_cols=wanted, **kwargs)
     except ValueError as exc:

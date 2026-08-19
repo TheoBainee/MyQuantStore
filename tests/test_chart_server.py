@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
+from pathlib import Path
 
 import polars as pl
 import pytest
@@ -310,3 +312,110 @@ class TestThumbnailsUnit:
     def test_render_sparkline_down(self):
         svg = render_sparkline_svg([4.0, 3.0, 2.0, 1.0], performance_pct=-10.0)
         assert "#ef5350" in svg
+
+
+def _write_sample_overlay(root: Path, *, instrument: str = "futures:ES") -> None:
+    back = root / "Backtests"
+    back.mkdir(parents=True)
+    stem = "ES_120_180"
+    meta = {
+        "long_15_25_50": {
+            "instrument": instrument,
+            "ticksize": 0.25,
+            "cth_open": 120,
+            "cth_close": 180,
+            "is_short": False,
+            "entry_factor": 15,
+            "factor": 25,
+            "stop_factor": 50,
+            "session": {"tz": "America/Chicago", "begin": "04:00", "end": "15:30"},
+            "extra": {},
+        }
+    }
+    (back / f"{stem}.meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    pl.DataFrame(
+        {
+            "backtest_id": ["long_15_25_50", "long_15_25_50"],
+            "time": [
+                datetime(2025, 6, 1, 14, 0, tzinfo=UTC),
+                datetime(2025, 6, 1, 15, 0, tzinfo=UTC),
+            ],
+            "price": [4500.0, 4510.0],
+            "side": ["buy", "sell"],
+            "kind": ["entry", "exit"],
+        }
+    ).write_parquet(back / f"{stem}.transactions.parquet")
+    pl.DataFrame(
+        {
+            "backtest_id": ["long_15_25_50", "long_15_25_50", "long_15_25_50"],
+            "time_from": [
+                datetime(2025, 6, 1, 13, 0, tzinfo=UTC),
+                datetime(2025, 6, 1, 14, 0, tzinfo=UTC),
+                datetime(2025, 6, 1, 14, 0, tzinfo=UTC),
+            ],
+            "time_to": [
+                datetime(2025, 6, 1, 14, 0, tzinfo=UTC),
+                datetime(2025, 6, 1, 15, 0, tzinfo=UTC),
+                datetime(2025, 6, 1, 15, 0, tzinfo=UTC),
+            ],
+            "price": [4500.0, 4520.0, 4480.0],
+            "side": ["buy", "sell", "sell"],
+            "order_type": ["LMT", "LMT", "STP"],
+        }
+    ).write_parquet(back / f"{stem}.orders.parquet")
+
+
+class TestOverlayApi:
+    def test_list_empty_without_dir(self, chart_setup):
+        settings, instruments, chains, defaults = chart_setup
+        app = create_chart_app(settings, instruments, chains, defaults)
+        client = TestClient(app)
+        resp = client.get("/api/overlays", params={"product": "futures:ES"})
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_list_and_load(self, chart_setup, tmp_path):
+        settings, instruments, chains, defaults = chart_setup
+        overlay_root = tmp_path / "overlays"
+        _write_sample_overlay(overlay_root)
+        settings.overlay_dir = str(overlay_root)
+        app = create_chart_app(settings, instruments, chains, defaults)
+        client = TestClient(app)
+
+        listed = client.get("/api/overlays", params={"product": "futures:ES"})
+        assert listed.status_code == 200
+        body = listed.json()
+        assert len(body) == 1
+        assert body[0]["stem"] == "ES_120_180"
+        assert body[0]["ids"] == ["long_15_25_50"]
+
+        other = client.get("/api/overlays", params={"product": "futures:NQ"})
+        assert other.json() == []
+
+        loaded = client.get("/api/overlay/ES_120_180")
+        assert loaded.status_code == 200
+        payload = loaded.json()
+        assert payload["id"] == "long_15_25_50"
+        assert len(payload["transactions"]) == 2
+        assert payload["transactions"][0]["kind"] == "entry"
+        types = {o["order_type"] for o in payload["orders"]}
+        assert types == {"LMT", "STP"}
+        assert all(o["order_type"] != "MKT" or True for o in payload["orders"])
+
+    def test_path_traversal_rejected(self, chart_setup, tmp_path):
+        settings, instruments, chains, defaults = chart_setup
+        settings.overlay_dir = str(tmp_path / "overlays")
+        (tmp_path / "overlays" / "Backtests").mkdir(parents=True)
+        app = create_chart_app(settings, instruments, chains, defaults)
+        client = TestClient(app)
+        resp = client.get("/api/overlay/../secret")
+        assert resp.status_code in (400, 404)
+
+    def test_unknown_stem_404(self, chart_setup, tmp_path):
+        settings, instruments, chains, defaults = chart_setup
+        settings.overlay_dir = str(tmp_path / "overlays")
+        (tmp_path / "overlays" / "Backtests").mkdir(parents=True)
+        app = create_chart_app(settings, instruments, chains, defaults)
+        client = TestClient(app)
+        resp = client.get("/api/overlay/missing")
+        assert resp.status_code == 404

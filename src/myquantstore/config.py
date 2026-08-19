@@ -203,6 +203,8 @@ class Settings(BaseSettings):
     chart_mdns: bool = False
     # Fenêtre des miniatures dashboard (jours calendaires, track 1day Yahoo).
     thumbnail_lookback_days: int = 90
+    # Racine des overlays (sous-dossier Backtests/). Vide = désactivé.
+    overlay_dir: str = ""
 
     # --- Serve / API query (config.toml: [serve]) ---
     # Bind de ``myquantstore serve`` si --host / --port absents.
@@ -780,6 +782,7 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
             "thumbnail_lookback_days": chart.get(
                 "thumbnail_lookback_days", data["thumbnail_lookback_days"]
             ),
+            "overlay_dir": _expand_path_str(chart.get("overlay_dir", data["overlay_dir"])),
             # [serve]
             "serve_port": serve_cfg.get("port", data["serve_port"]),
             "serve_host": serve_cfg.get("host", data["serve_host"]),

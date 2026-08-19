@@ -63,6 +63,8 @@
             <option value="log">Log</option>
         </select>
         <button id="fit-btn">Ajuster</button>
+        <label id="overlay-label" hidden>Backtest:</label>
+        <select id="overlay-select" hidden></select>
         <span class="info" id="info-bar">Chargement...</span>
     </div>
     <div id="loading">Chargement des chandeliers...</div>
@@ -92,6 +94,11 @@
         let isLoading = false;    // Anti-reentrancy pour le lazy loading
         let noMoreData = false;   // True quand on a atteint le début de l'historique (plus rien à fetch)
         let currentTimescale = { unit: TIMESCALE_UNIT, nb: TIMESCALE_NB };
+        let overlayCatalog = [];
+        let overlayTx = [];
+        let overlayOrders = [];
+        let overlayPriceLines = [];
+        let seriesMarkersApi = null;
 
         // --- Création du chart ---
         function createChart() {
@@ -146,6 +153,7 @@
                         fetchOlderCandles();
                     }
                 }
+                applyOverlayDrawings();
             });
 
             // Resize responsive
@@ -333,6 +341,7 @@
             for (const c of allCandles) {
                 candleMap.set(c.time, c);
             }
+            applyOverlayDrawings();
         }
 
         // --- Barre d'info ---
@@ -384,6 +393,163 @@
             applyPriceScaleMode(e.target.value);
         });
 
+        // --- Overlay backtests ---
+        const BUY = '#26a69a';
+        const SELL = '#ef5350';
+
+        function toUnix(iso) {
+            if (!iso) return null;
+            const ms = Date.parse(iso);
+            return Number.isNaN(ms) ? null : Math.floor(ms / 1000);
+        }
+
+        function snapTime(unix) {
+            if (!allCandles.length) return unix;
+            let best = allCandles[0].time;
+            for (const c of allCandles) {
+                if (c.time <= unix) best = c.time;
+                else break;
+            }
+            return best;
+        }
+
+        function clearOverlayDrawings() {
+            for (const line of overlayPriceLines) {
+                candleSeries.removePriceLine(line);
+            }
+            overlayPriceLines = [];
+            if (seriesMarkersApi) seriesMarkersApi.setMarkers([]);
+        }
+
+        function applyOverlayDrawings() {
+            if (!candleSeries) return;
+            clearOverlayDrawings();
+            const range = chart.timeScale().getVisibleRange();
+            const visFrom = range ? range.from : null;
+            const visTo = range ? range.to : null;
+            for (const o of overlayOrders) {
+                if (o.order_type === 'MKT' || o.price == null) continue;
+                const t0 = toUnix(o.time_from);
+                const t1 = toUnix(o.time_to);
+                if (visFrom != null && visTo != null && t0 != null && t1 != null) {
+                    if (t1 < visFrom || t0 > visTo) continue;
+                }
+                overlayPriceLines.push(candleSeries.createPriceLine({
+                    price: o.price,
+                    color: o.side === 'buy' ? BUY : SELL,
+                    lineWidth: 1,
+                    lineStyle: o.order_type === 'STP'
+                        ? LightweightCharts.LineStyle.Dashed
+                        : LightweightCharts.LineStyle.Solid,
+                    axisLabelVisible: true,
+                    title: o.order_type || '',
+                }));
+            }
+            if (!seriesMarkersApi && LightweightCharts.createSeriesMarkers) {
+                seriesMarkersApi = LightweightCharts.createSeriesMarkers(candleSeries, []);
+            }
+            if (seriesMarkersApi) {
+                const markers = [];
+                for (const t of overlayTx) {
+                    const unix = toUnix(t.time);
+                    if (unix == null || t.price == null) continue;
+                    markers.push({
+                        time: snapTime(unix),
+                        price: t.price,
+                        position: 'atPriceMiddle',
+                        shape: 'circle',
+                        color: t.side === 'buy' ? BUY : SELL,
+                        size: 0.75,
+                    });
+                }
+                seriesMarkersApi.setMarkers(markers);
+            }
+        }
+
+        async function fetchOverlayPayload(stem, id) {
+            const q = id ? `?id=${encodeURIComponent(id)}` : '';
+            const resp = await fetch(`/api/overlay/${encodeURIComponent(stem)}${q}`);
+            if (!resp.ok) return null;
+            return resp.json();
+        }
+
+        async function applyOverlaySelection() {
+            const sel = document.getElementById('overlay-select');
+            const value = sel.value;
+            overlayTx = [];
+            overlayOrders = [];
+            clearOverlayDrawings();
+            if (!value) return;
+            const [stem, id] = value.split('|');
+            const payload = await fetchOverlayPayload(stem, id || undefined);
+            if (!payload) return;
+            overlayTx = payload.transactions || [];
+            overlayOrders = payload.orders || [];
+            await ensureCandlesAroundOverlay();
+            applyOverlayDrawings();
+        }
+
+        async function ensureCandlesAroundOverlay() {
+            const times = overlayTx.map(t => toUnix(t.time)).filter(t => t != null);
+            if (!times.length) return;
+            const first = Math.min(...times);
+            const last = Math.max(...times);
+            const loadedFirst = allCandles.length ? allCandles[0].time : null;
+            const loadedLast = allCandles.length ? allCandles[allCandles.length - 1].time : null;
+            if (loadedFirst != null && first >= loadedFirst && last <= loadedLast) {
+                chart.timeScale().setVisibleRange({ from: last - 3600, to: last + 60 });
+                return;
+            }
+            const after = new Date((first - 3600) * 1000).toISOString();
+            const before = new Date((last + 3600) * 1000).toISOString();
+            const url = `/api/candles?product=${PRODUCT}&timescale_unit=${currentTimescale.unit}&timescale_nb=${currentTimescale.nb}&limit=${MAX_VISIBLE_CANDLES}&after=${after}&before=${before}`;
+            const resp = await fetch(url);
+            if (!resp.ok) return;
+            const buffer = await resp.arrayBuffer();
+            if (buffer.byteLength === 0) return;
+            allCandles = parseArrowIpc(buffer);
+            if (!allCandles.length) return;
+            oldestTimestamp = allCandles[0].time;
+            noMoreData = false;
+            updateChart();
+            chart.timeScale().setVisibleRange({ from: last - 3600, to: last + 60 });
+            updateInfoBar();
+        }
+
+        async function initOverlays() {
+            const label = document.getElementById('overlay-label');
+            const sel = document.getElementById('overlay-select');
+            try {
+                const resp = await fetch(`/api/overlays?product=${encodeURIComponent(PRODUCT)}`);
+                overlayCatalog = resp.ok ? await resp.json() : [];
+            } catch {
+                overlayCatalog = [];
+            }
+            sel.innerHTML = '';
+            if (!overlayCatalog.length) return;
+            label.hidden = false;
+            sel.hidden = false;
+            const params = new URLSearchParams(location.search);
+            const wantStem = params.get('overlay');
+            const wantId = params.get('id');
+            let selected = null;
+            for (const item of overlayCatalog) {
+                for (const id of (item.ids || [item.stem])) {
+                    const opt = document.createElement('option');
+                    opt.value = `${item.stem}|${id}`;
+                    opt.textContent = id;
+                    sel.appendChild(opt);
+                    if (!selected) selected = opt.value;
+                    if (wantStem === item.stem && (!wantId || wantId === id)) {
+                        selected = opt.value;
+                    }
+                }
+            }
+            if (selected) sel.value = selected;
+            sel.addEventListener('change', () => { applyOverlaySelection(); });
+            await applyOverlaySelection();
+        }
+
         // --- Logger minimal ---
         const logger = { debug: (...args) => console.log('[chart]', ...args) };
 
@@ -405,7 +571,7 @@
             document.getElementById('timescale-select').value = savedTimescale;
         }
 
-        loadInitial();
+        loadInitial().then(() => initOverlays());
     </script>
 </body>
 </html>

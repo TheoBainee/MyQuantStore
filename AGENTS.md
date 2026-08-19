@@ -79,7 +79,7 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
 - Cascade type-aware dans pipeline/cascade.py.
 - Agrégateur générique (polars unique + casts).
 - Query : reader + resampler + adjust (split).
-- CLI complète + chart serveur (dashboard `/` multi-type, miniatures SVG 1day, charts `/{type}:{symbol}`).
+- CLI complète + chart serveur (dashboard `/` multi-type, miniatures SVG 1day, charts `/{type}:{symbol}`). Overlay backtests : `[chart] overlay_dir` → `{overlay_dir}/Backtests/` (`/api/overlays`, `/api/overlay/{stem}`).
 - **`myquantstore serve`** : API HTTP `query()` (`/v1/health`, `/v1/instruments`, `/v1/query`) — Parquet / Arrow, pas de cascade, pas d'auth v1. Spec : `docs/TODO_SERVE.md`.
 - **Portfolio MPT** (`analytics/`, CLI `portfolio`) : panel stocks 1day total-return, corr/cov, optim long-only equal|min-vol|max-sharpe, allocate (lots), frontier (Polars + numpy). Chart lazy `portfolio:max-sharpe`/`min-vol` (combo base puis resample, rebase 100).
 
