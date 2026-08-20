@@ -248,6 +248,27 @@ class TestFilterIntradayEquals:
             filter_intraday(df, time(9, 30), time(9, 30))
 
 
+class TestFilterIntradayTimezone:
+    """intraday_begin/end interprétés dans une timezone IANA."""
+
+    def test_chicago_summer_cdt(self):
+        """14:30 UTC = 09:30 CDT ; 21:00 UTC = 16:00 CDT (2024-07)."""
+        starts = [
+            datetime(2024, 7, 15, 14, 0),  # 09:00 CDT → exclu
+            datetime(2024, 7, 15, 14, 30),  # 09:30 CDT → inclus
+            datetime(2024, 7, 15, 21, 0),  # 16:00 CDT → inclus
+            datetime(2024, 7, 15, 21, 30),  # 16:30 CDT → exclu
+        ]
+        df = _make_session_df(date(2024, 7, 15), starts)
+        result = filter_intraday(
+            df, time(9, 30), time(16, 0), timezone="America/Chicago"
+        )
+        kept = result["window_start"].to_list()
+        assert len(kept) == 2
+        assert datetime(2024, 7, 15, 14, 30) in kept
+        assert datetime(2024, 7, 15, 21, 0) in kept
+
+
 class TestIntradayCoherence:
     """Cohérence du bucketing avec filtrage intraday."""
 

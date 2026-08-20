@@ -97,6 +97,7 @@
         const TX_SELL = "__TX_SELL__";
         const ORDER_BUY = "__ORDER_BUY__";
         const ORDER_SELL = "__ORDER_SELL__";
+        const TIMEZONE = "__TIMEZONE__";
 
         function hexToRgba(hex, alpha) {
             let h = String(hex || '').replace('#', '');
@@ -107,6 +108,35 @@
         }
         const VOL_UP = hexToRgba(CANDLE_UP, 0.5);
         const VOL_DOWN = hexToRgba(CANDLE_DOWN, 0.5);
+
+        const _fmtTzDateTime = new Intl.DateTimeFormat('en-CA', {
+            timeZone: TIMEZONE,
+            year: 'numeric', month: '2-digit', day: '2-digit',
+            hour: '2-digit', minute: '2-digit', hour12: false,
+        });
+        const _fmtTzDate = new Intl.DateTimeFormat('en-CA', {
+            timeZone: TIMEZONE,
+            year: 'numeric', month: '2-digit', day: '2-digit',
+        });
+        const _fmtTzTime = new Intl.DateTimeFormat('en-GB', {
+            timeZone: TIMEZONE,
+            hour: '2-digit', minute: '2-digit', hour12: false,
+        });
+        const _fmtTzTick = new Intl.DateTimeFormat('en-GB', {
+            timeZone: TIMEZONE,
+            month: 'short', day: 'numeric',
+            hour: '2-digit', minute: '2-digit', hour12: false,
+        });
+
+        function formatInTz(unixSec) {
+            // en-CA → YYYY-MM-DD, HH:MM
+            const parts = _fmtTzDateTime.formatToParts(new Date(unixSec * 1000));
+            const get = (t) => parts.find(p => p.type === t)?.value || '';
+            return `${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')} ${TIMEZONE}`;
+        }
+        function formatDateInTz(unixSec) {
+            return _fmtTzDate.format(new Date(unixSec * 1000));
+        }
 
         // --- État global ---
         let chart, candleSeries, volumeSeries;
@@ -141,7 +171,23 @@
                 },
                 crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
                 rightPriceScale: { borderColor: '#363a45' },
-                timeScale: { borderColor: '#363a45', timeVisible: true, secondsVisible: false },
+                timeScale: {
+                    borderColor: '#363a45',
+                    timeVisible: true,
+                    secondsVisible: false,
+                    tickMarkFormatter: (time) => {
+                        const sec = typeof time === 'number' ? time : null;
+                        if (sec == null) return '';
+                        return _fmtTzTick.format(new Date(sec * 1000));
+                    },
+                },
+                localization: {
+                    timeFormatter: (time) => {
+                        const sec = typeof time === 'number' ? time : null;
+                        if (sec == null) return '';
+                        return formatInTz(sec);
+                    },
+                },
             });
 
             // Pane 0 : candlestick
@@ -206,9 +252,8 @@
                     return;
                 }
 
-                // Date/heure lisible
-                const d = new Date(candle.time * 1000);
-                const dateStr = d.toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
+                // Date/heure lisible (timezone conf)
+                const dateStr = formatInTz(candle.time);
 
                 // Variation
                 const delta = candle.close - candle.open;
@@ -379,9 +424,10 @@
         // --- Barre d'info ---
         function updateInfoBar() {
             const total = allCandles.length;
-            const first = allCandles.length > 0 ? new Date(allCandles[0].time * 1000).toISOString().slice(0,10) : 'N/A';
-            const last = allCandles.length > 0 ? new Date(allCandles[allCandles.length-1].time * 1000).toISOString().slice(0,10) : 'N/A';
-            document.getElementById('info-bar').textContent = `${PRODUCT} | ${total} candles | ${first} → ${last} | ${currentTimescale.nb}${currentTimescale.unit}`;
+            const first = allCandles.length > 0 ? formatDateInTz(allCandles[0].time) : 'N/A';
+            const last = allCandles.length > 0 ? formatDateInTz(allCandles[allCandles.length-1].time) : 'N/A';
+            document.getElementById('info-bar').textContent =
+                `${PRODUCT} | ${total} candles | ${first} → ${last} | ${currentTimescale.nb}${currentTimescale.unit} | ${TIMEZONE}`;
         }
 
         // --- Tooltip OHLCV au survol (crosshair) ---

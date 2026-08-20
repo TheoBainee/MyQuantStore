@@ -43,7 +43,7 @@ comportement naturel du ``group_by`` — on n'invente pas de données.
 
 from __future__ import annotations
 
-from datetime import date, timedelta, time
+from datetime import date, time, timedelta
 
 import polars as pl
 
@@ -52,28 +52,91 @@ from myquantstore.logging_setup import get_logger
 logger = get_logger("resampler")
 
 
+def _ws_time_zone(df: pl.DataFrame) -> str | None:
+    dtype = df.schema.get("window_start")
+    return getattr(dtype, "time_zone", None) if dtype is not None else None
+
+
+def _local_time_expr(timezone: str, ws_tz: str | None) -> pl.Expr:
+    """Heure locale de ``window_start`` dans ``timezone`` (stockage = UTC)."""
+    expr = pl.col("window_start")
+    if ws_tz:
+        expr = expr.dt.convert_time_zone(timezone)
+    else:
+        expr = expr.dt.replace_time_zone("UTC").dt.convert_time_zone(timezone)
+    return expr.dt.time()
+
+
+def _wall_clock_on_date_naive_utc(
+    date_expr: pl.Expr,
+    clock: time,
+    timezone: str,
+    *,
+    day_offset: int = 0,
+) -> pl.Expr:
+    """Date calendaire + HH:MM en ``timezone`` → datetime naive UTC (ns)."""
+    base = date_expr.cast(pl.Datetime("ns"))
+    if day_offset:
+        base = base + pl.duration(days=day_offset)
+    local_naive = base + pl.duration(
+        hours=clock.hour,
+        minutes=clock.minute,
+        seconds=clock.second or 0,
+    )
+    return (
+        local_naive.dt.replace_time_zone(timezone)
+        .dt.convert_time_zone("UTC")
+        .dt.replace_time_zone(None)
+    )
+
+
+def _as_naive_utc_window(df: pl.DataFrame) -> tuple[pl.DataFrame, str | None]:
+    """``window_start`` → naive UTC ; retourne (df, tz_origine ou None)."""
+    ws_tz = _ws_time_zone(df)
+    if not ws_tz:
+        return df, None
+    out = df.with_columns(
+        pl.col("window_start")
+        .dt.convert_time_zone("UTC")
+        .dt.replace_time_zone(None)
+        .alias("window_start")
+    )
+    return out, ws_tz
+
+
+def _restore_window_tz(df: pl.DataFrame, ws_tz: str | None) -> pl.DataFrame:
+    if not ws_tz or "window_start" not in df.columns:
+        return df
+    return df.with_columns(
+        pl.col("window_start").dt.replace_time_zone("UTC").dt.convert_time_zone(ws_tz)
+    )
+
+
 def filter_intraday(
     df: pl.DataFrame,
     intraday_begin: time,
     intraday_end: time,
+    *,
+    timezone: str = "UTC",
 ) -> pl.DataFrame:
-    """Filtre les candles par heure du jour (time-of-day).
+    """Filtre les candles par heure du jour (time-of-day) dans ``timezone``.
 
     Deux modes selon l'ordre des bornes :
 
     - **Normal** (``begin < end``, ex: 09:30-16:00) : garde les candles dont
-      l'heure est dans ``[begin, end]`` (inclusif aux deux bornes).
+      l'heure **locale** est dans ``[begin, end]`` (inclusif aux deux bornes).
 
     - **Wrap-around** (``begin > end``, ex: 20:00-04:00) : garde les candles
-      dont l'heure est ``>= begin`` **ou** ``<= end``. Utile pour les sessions
-      overnight qui spannent minuit.
+      dont l'heure locale est ``>= begin`` **ou** ``<= end``. Utile pour les
+      sessions overnight qui spannent minuit.
 
-    Le filtrage utilise ``pl.col('window_start').dt.time()`` pour extraire
-    l'heure du jour de chaque candle, puis applique le prédicat approprié.
+    ``window_start`` est interprété en UTC (naive = UTC). ``intraday_begin/end``
+    sont des heures murales dans ``timezone`` (IANA, défaut ``UTC``).
 
     :param df: DataFrame Polars avec colonne ``window_start`` (Datetime).
     :param intraday_begin: Heure de début (ex: ``time(9, 30)``).
     :param intraday_end: Heure de fin (ex: ``time(16, 0)``).
+    :param timezone: Fuseau IANA pour interpréter begin/end (ex: ``America/Chicago``).
     :raises ValueError: Si ``intraday_begin == intraday_end``.
     :return: DataFrame filtré (mêmes colonnes, moins de lignes).
     """
@@ -83,21 +146,18 @@ def filter_intraday(
             f"intraday_end ({intraday_end})."
         )
 
+    tz = timezone or "UTC"
+    local_t = _local_time_expr(tz, _ws_time_zone(df))
+
     if intraday_begin < intraday_end:
-        # Mode normal : [begin, end]
-        mask = (pl.col("window_start").dt.time() >= intraday_begin) & (
-            pl.col("window_start").dt.time() <= intraday_end
-        )
+        mask = (local_t >= intraday_begin) & (local_t <= intraday_end)
         mode = "normal"
     else:
-        # Wrap-around : >= begin OR <= end (spanne minuit)
-        mask = (pl.col("window_start").dt.time() >= intraday_begin) | (
-            pl.col("window_start").dt.time() <= intraday_end
-        )
+        mask = (local_t >= intraday_begin) | (local_t <= intraday_end)
         mode = "wrap-around"
 
     logger.debug(
-        f"Filtrage intraday ({mode}): {intraday_begin} - {intraday_end}"
+        f"Filtrage intraday ({mode}): {intraday_begin} - {intraday_end} tz={tz}"
     )
     return df.filter(mask)
 
@@ -107,6 +167,8 @@ def resample_ohlcv(
     k_minutes: int,
     intraday_begin: time | None = None,
     intraday_end: time | None = None,
+    *,
+    timezone: str = "UTC",
 ) -> pl.DataFrame:
     """Rééchantillonne des candles 1min en candles k-min.
 
@@ -122,6 +184,7 @@ def resample_ohlcv(
         été appliqué avant). Utilisé pour calculer l'ancre.
     :param intraday_end: Heure de fin intraday. Utilisé pour calculer la fin
         de session (et dropper les partiels).
+    :param timezone: Fuseau IANA des heures intraday (défaut ``UTC``).
     :raises ValueError: Si ``k_minutes < 1``.
     :return: DataFrame Polars de candles k-min avec une colonne supplémentaire
         ``candle_count`` (nombre de candles 1min agrégés par bucket).
@@ -136,28 +199,25 @@ def resample_ohlcv(
             return df.with_columns(pl.lit(1).cast(pl.Int32).alias("candle_count"))
         return df
 
-    logger.info(f"Resampling 1min -> {k_minutes}min")
+    tz = timezone or "UTC"
+    logger.info(f"Resampling 1min -> {k_minutes}min (tz={tz})")
+
+    df, orig_ws_tz = _as_naive_utc_window(df)
 
     # --- 1. Calculer l'ancre (anchor) par session ---
-    # L'ancre est le point de départ de la grille de bucketing.
+    # L'ancre est le point de départ de la grille de bucketing (naive UTC).
     if intraday_begin is not None and intraday_end is not None:
-        # Mode intraday : ancre = session_end_date + intraday_begin
-        # Si wrap-around (begin > end), la session commence la veille → -1 jour
+        # Mode intraday : ancre = session_end_date @ begin (TZ) → UTC
+        # Wrap-around (begin > end) : session commence la veille
+        sed = pl.col("session_end_date")
         if intraday_begin > intraday_end:
-            anchor_expr = (pl.col("session_end_date").cast(pl.Datetime("ns")) - pl.duration(days=1)) + pl.duration(
-                hours=intraday_begin.hour, minutes=intraday_begin.minute
+            anchor_expr = _wall_clock_on_date_naive_utc(
+                sed, intraday_begin, tz, day_offset=-1
             )
-            # Fin de session = session_end_date + intraday_end
-            session_end_expr = pl.col("session_end_date").cast(pl.Datetime("ns")) + pl.duration(
-                hours=intraday_end.hour, minutes=intraday_end.minute
-            )
+            session_end_expr = _wall_clock_on_date_naive_utc(sed, intraday_end, tz)
         else:
-            anchor_expr = pl.col("session_end_date").cast(pl.Datetime("ns")) + pl.duration(
-                hours=intraday_begin.hour, minutes=intraday_begin.minute
-            )
-            session_end_expr = pl.col("session_end_date").cast(pl.Datetime("ns")) + pl.duration(
-                hours=intraday_end.hour, minutes=intraday_end.minute
-            )
+            anchor_expr = _wall_clock_on_date_naive_utc(sed, intraday_begin, tz)
+            session_end_expr = _wall_clock_on_date_naive_utc(sed, intraday_end, tz)
 
         # Joindre l'ancre et la fin de session par session_end_date
         anchors = df.select("session_end_date").unique().with_columns(
@@ -230,7 +290,7 @@ def resample_ohlcv(
         f"Resampling terminé: {agg.height} buckets {k_minutes}min "
         f"(depuis {df.height} candles 1min, {dropped} partiels droppés)"
     )
-    return agg
+    return _restore_window_tz(agg, orig_ws_tz)
 
 
 def resample_extraday(

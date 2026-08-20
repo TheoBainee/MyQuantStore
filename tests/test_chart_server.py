@@ -390,6 +390,19 @@ class TestChartColorInjection:
         assert 'const ORDER_SELL = "#FF6600"' in html
         assert "__CANDLE_UP__" not in html
 
+    def test_html_injects_timezone(self, chart_setup):
+        settings, instruments, chains, _ = chart_setup
+        defaults = ChartDefaults(
+            default_product="futures:ES",
+            timezone="America/Chicago",
+        )
+        app = create_chart_app(settings, instruments, chains, defaults)
+        client = TestClient(app)
+        resp = client.get("/futures:ES")
+        assert resp.status_code == 200
+        assert 'const TIMEZONE = "America/Chicago"' in resp.text
+        assert "__TIMEZONE__" not in resp.text
+
 
 class TestOverlayApi:
     def test_list_empty_without_dir(self, chart_setup):

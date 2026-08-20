@@ -391,6 +391,7 @@ class ChartDefaults:
         tx_sell: str = "#FF9800",
         order_buy: str = "#2196F3",
         order_sell: str = "#FF9800",
+        timezone: str = "UTC",
     ) -> None:
         self.default_product = default_product
         self.timescale_unit = timescale_unit
@@ -411,6 +412,7 @@ class ChartDefaults:
         self.tx_sell = tx_sell
         self.order_buy = order_buy
         self.order_sell = order_sell
+        self.timezone = timezone or "UTC"
 
 
 def _timescale_to_params(unit: str, nb: int) -> tuple[str, int, int]:
@@ -455,6 +457,7 @@ def _query_chart_ohlcv(
         "resolution": resolution,
         "intraday_begin": defaults.intraday_begin if resolution != "1day" else None,
         "intraday_end": defaults.intraday_end if resolution != "1day" else None,
+        "timezone": defaults.timezone if resolution != "1day" else "UTC",
         "normalize_tick_size": defaults.normalize_tick_size if resolution != "1day" else False,
         "adjust_rollover": defaults.adjust_rollover,
         "no_split": defaults.no_split,
@@ -558,6 +561,7 @@ def _render_chart_html(instrument_key: str, defaults: ChartDefaults) -> str:
         "__TX_SELL__": defaults.tx_sell,
         "__ORDER_BUY__": defaults.order_buy,
         "__ORDER_SELL__": defaults.order_sell,
+        "__TIMEZONE__": defaults.timezone,
     }
 
     for key, value in replacements.items():

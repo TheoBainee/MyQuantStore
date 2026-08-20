@@ -2353,6 +2353,7 @@ def _cmd_chart(settings: Settings, args: argparse.Namespace) -> int:
         tx_sell=settings.chart_tx_sell,
         order_buy=settings.chart_order_buy,
         order_sell=settings.chart_order_sell,
+        timezone=settings.chart_timezone,
     )
 
     start_url = (

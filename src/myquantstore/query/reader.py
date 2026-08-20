@@ -87,6 +87,7 @@ def query(
     k_minutes: int = 1,
     intraday_begin: time | None = None,
     intraday_end: time | None = None,
+    timezone: str = "UTC",
     adjust_rollover: bool = False,
     normalize_tick_size: bool = False,
     check_ticksize_accuracy: bool = False,
@@ -110,6 +111,7 @@ def query(
     :param k_minutes: Rééchantillonnage en k minutes (track ``1min``).
     :param intraday_begin: Heure de début intraday (HH:MM). Wrap-around supporté.
     :param intraday_end: Heure de fin intraday (HH:MM).
+    :param timezone: Fuseau IANA pour interpréter ``intraday_begin/end`` (défaut UTC).
     :param adjust_rollover: Si True, applique l'ajustement (back-adjusted rollover pour futures,
         dividends pour stocks après splits). Non activé par défaut.
     :param normalize_tick_size: Si True, convertit OHLC + settlement en Int32
@@ -193,9 +195,10 @@ def query(
         elif instrument.type == InstrumentType.FUTURES and chain is not None:
             df = apply_rollover_adjustment(df, chain)
 
-    # --- Filtrage intraday (par heure du jour) — track 1min only ---
+    # --- Filtrage intraday (par heure du jour, dans timezone) — track 1min only ---
+    tz = timezone or "UTC"
     if not is_extraday and intraday_begin is not None and intraday_end is not None:
-        df = filter_intraday(df, intraday_begin, intraday_end)
+        df = filter_intraday(df, intraday_begin, intraday_end, timezone=tz)
 
     # --- Bilan qualité tick size (read-only, affiche un bilan) ---
     if check_ticksize_accuracy and chain is not None:
@@ -215,7 +218,9 @@ def query(
         if k_days > 1:
             df = resample_extraday(df, k_days, week_aligned=week_aligned)
     elif k_minutes > 1:
-        df = resample_ohlcv(df, k_minutes, intraday_begin, intraday_end)
+        df = resample_ohlcv(
+            df, k_minutes, intraday_begin, intraday_end, timezone=tz
+        )
 
     # --- Limit ---
     if limit is not None and limit > 0:

@@ -80,6 +80,7 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
 - Agrégateur générique (polars unique + casts).
 - Query : reader + resampler + adjust (split).
 - CLI complète + chart serveur (dashboard `/` multi-type, miniatures SVG 1day, charts `/{type}:{symbol}`). Couleurs conf : `[chart] candle_up/down` ; overlay `[chart.overlay] overlay_dir` + `[chart.overlay.backtest]` (tx/order buy/sell hex). Rétrocompat `[chart] overlay_dir`. API `/api/overlays`, `/api/overlay/{stem}`.
+- Chart timezone : `[chart] timezone` (IANA, défaut UTC) — affichage axe/tooltip + `intraday_begin/end` en heures murales de cette TZ.
 - **`myquantstore serve`** : API HTTP `query()` (`/v1/health`, `/v1/instruments`, `/v1/query`) — Parquet / Arrow, pas de cascade, pas d'auth v1. Spec : `docs/TODO_SERVE.md`.
 - **Portfolio MPT** (`analytics/`, CLI `portfolio`) : panel stocks 1day total-return, corr/cov, optim long-only equal|min-vol|max-sharpe, allocate (lots), frontier (Polars + numpy). Chart lazy `portfolio:max-sharpe`/`min-vol` (combo base puis resample, rebase 100).
 

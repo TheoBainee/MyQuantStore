@@ -22,6 +22,7 @@ import tomllib
 from datetime import UTC, datetime, time
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -226,6 +227,8 @@ class Settings(BaseSettings):
     # Filtre session intraday chart (HH:MM) — les deux ou aucun. CLI override.
     chart_intraday_begin: time | None = None
     chart_intraday_end: time | None = None
+    # Fuseau IANA pour affichage chart + interprétation intraday_begin/end.
+    chart_timezone: str = "UTC"
     # Fenêtre des miniatures dashboard (jours calendaires, track 1day Yahoo).
     thumbnail_lookback_days: int = 90
     # Couleurs chandeliers (hex).
@@ -287,6 +290,19 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"{info.field_name} doit être HH:MM (reçu: {v!r})"
             ) from exc
+
+    @field_validator("chart_timezone", mode="before")
+    @classmethod
+    def _chart_timezone_iana(cls, v: Any) -> str:
+        name = str(v or "UTC").strip() or "UTC"
+        try:
+            ZoneInfo(name)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError(
+                f"chart timezone IANA invalide: {name!r} "
+                f"(ex: UTC, America/Chicago, Europe/Paris)"
+            ) from exc
+        return name
 
     @field_validator("overlap_buffer_days")
     @classmethod
@@ -867,6 +883,7 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
             "chart_intraday_end": chart.get(
                 "intraday_end", data["chart_intraday_end"]
             ),
+            "chart_timezone": chart.get("timezone", data["chart_timezone"]),
             "thumbnail_lookback_days": chart.get(
                 "thumbnail_lookback_days", data["thumbnail_lookback_days"]
             ),
