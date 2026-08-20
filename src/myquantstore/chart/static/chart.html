@@ -23,6 +23,10 @@
         #toolbar .info { margin-left: auto; font-size: 12px; color: #787b86; }
         #chart { width: 100%; height: calc(100vh - 50px); position: relative; }
         #chart.loading { pointer-events: none; }
+        #overlay-canvas {
+            position: absolute; inset: 0; width: 100%; height: 100%;
+            pointer-events: none; z-index: 5;
+        }
         #loading { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 18px; color: #787b86; }
         #tooltip { position: absolute; z-index: 10; display: none; pointer-events: none; background: #131722; border: 1px solid #2a2e39; border-radius: 4px; padding: 8px 12px; font-size: 12px; font-family: monospace; color: #d1d4dc; white-space: nowrap; line-height: 1.6; }
         #tooltip .tt-date { color: #787b86; margin-bottom: 4px; }
@@ -69,6 +73,7 @@
     </div>
     <div id="loading">Chargement des chandeliers...</div>
     <div id="chart">
+        <canvas id="overlay-canvas"></canvas>
         <div id="tooltip"></div>
     </div>
 
@@ -95,10 +100,14 @@
         let noMoreData = false;   // True quand on a atteint le début de l'historique (plus rien à fetch)
         let currentTimescale = { unit: TIMESCALE_UNIT, nb: TIMESCALE_NB };
         let overlayCatalog = [];
-        let overlayTx = [];
-        let overlayOrders = [];
-        let overlayOrderSeries = [];
+        let overlayTx = [];           // brut API
+        let overlayOrders = [];       // brut API
+        let overlayTxParsed = [];     // {time, price, color}
+        let overlayOrdersParsed = []; // {t0, t1, price, color, dashed}
         let seriesMarkersApi = null;
+        let overlayCanvas = null;
+        let overlayCtx = null;
+        let overlayDrawRaf = 0;
 
         // --- Création du chart ---
         function createChart() {
@@ -153,13 +162,19 @@
                         fetchOlderCandles();
                     }
                 }
-                applyOverlayDrawings();
+                scheduleOverlayCanvasDraw();
             });
+
+            overlayCanvas = document.getElementById('overlay-canvas');
+            overlayCtx = overlayCanvas.getContext('2d');
 
             // Resize responsive
             new ResizeObserver(entries => {
                 if (entries.length > 0) {
-                    chart.applyOptions({ width: entries[0].contentRect.width, height: entries[0].contentRect.height });
+                    const { width, height } = entries[0].contentRect;
+                    chart.applyOptions({ width, height });
+                    resizeOverlayCanvas(width, height);
+                    scheduleOverlayCanvasDraw();
                 }
             }).observe(container);
 
@@ -341,7 +356,8 @@
             for (const c of allCandles) {
                 candleMap.set(c.time, c);
             }
-            applyOverlayDrawings();
+            applyOverlayMarkers();
+            scheduleOverlayCanvasDraw();
         }
 
         // --- Barre d'info ---
@@ -414,29 +430,40 @@
             }
         }
 
+        /** Dernière candle <= unix (dichotomie, allCandles trié). */
         function snapTime(unix) {
-            if (!allCandles.length) return unix;
-            let best = allCandles[0].time;
-            for (const c of allCandles) {
-                if (c.time <= unix) best = c.time;
-                else break;
+            const arr = allCandles;
+            const n = arr.length;
+            if (!n) return unix;
+            if (unix <= arr[0].time) return arr[0].time;
+            if (unix >= arr[n - 1].time) return arr[n - 1].time;
+            let lo = 0, hi = n - 1;
+            while (lo < hi) {
+                const mid = (lo + hi + 1) >> 1;
+                if (arr[mid].time <= unix) lo = mid;
+                else hi = mid - 1;
             }
-            return best;
+            return arr[lo].time;
         }
 
         function nextCandleTime(unix) {
-            if (!allCandles.length) return unix + barSeconds();
-            for (const c of allCandles) {
-                if (c.time > unix) return c.time;
+            const arr = allCandles;
+            const n = arr.length;
+            if (!n) return unix + barSeconds();
+            let lo = 0, hi = n;
+            while (lo < hi) {
+                const mid = (lo + hi) >> 1;
+                if (arr[mid].time <= unix) lo = mid + 1;
+                else hi = mid;
             }
-            return unix + barSeconds();
+            return lo < n ? arr[lo].time : unix + barSeconds();
         }
 
         /** Segment pending [time_from, time_to] ; durée 0 → 1 chandelier. */
         function orderSegmentTimes(t0, t1) {
             if (t0 == null) return null;
-            let from = snapTime(t0);
-            let toRaw = t1 != null ? t1 : t0;
+            const from = snapTime(t0);
+            const toRaw = t1 != null ? t1 : t0;
             let to;
             if (toRaw <= t0) {
                 to = nextCandleTime(from);
@@ -447,67 +474,162 @@
             return { from, to };
         }
 
-        function clearOverlayDrawings() {
-            for (const s of overlayOrderSeries) {
-                try { chart.removeSeries(s); } catch (_) { /* already gone */ }
+        function parseOverlayPayload() {
+            overlayTxParsed = [];
+            for (const t of overlayTx) {
+                const time = toUnix(t.time);
+                if (time == null || t.price == null) continue;
+                overlayTxParsed.push({
+                    time,
+                    price: t.price,
+                    color: t.side === 'buy' ? BUY : SELL,
+                });
             }
-            overlayOrderSeries = [];
-            if (seriesMarkersApi) seriesMarkersApi.setMarkers([]);
-        }
-
-        function applyOverlayDrawings() {
-            if (!candleSeries || !chart) return;
-            clearOverlayDrawings();
-            const range = chart.timeScale().getVisibleRange();
-            const visFrom = range ? range.from : null;
-            const visTo = range ? range.to : null;
+            overlayTxParsed.sort((a, b) => a.time - b.time);
+            overlayOrdersParsed = [];
             for (const o of overlayOrders) {
                 if (o.order_type === 'MKT' || o.price == null) continue;
                 const t0 = toUnix(o.time_from);
-                const t1 = toUnix(o.time_to);
                 if (t0 == null) continue;
-                const t1eff = t1 != null ? t1 : t0;
-                if (visFrom != null && visTo != null) {
-                    if (t1eff < visFrom || t0 > visTo) continue;
-                }
-                const seg = orderSegmentTimes(t0, t1);
-                if (!seg) continue;
-                const series = chart.addSeries(LightweightCharts.LineSeries, {
+                const t1 = toUnix(o.time_to);
+                overlayOrdersParsed.push({
+                    t0,
+                    t1: t1 != null ? t1 : t0,
+                    price: o.price,
                     color: o.side === 'buy' ? BUY : SELL,
-                    lineWidth: 1,
-                    lineStyle: o.order_type === 'STP'
-                        ? LightweightCharts.LineStyle.Dashed
-                        : LightweightCharts.LineStyle.Solid,
-                    lastValueVisible: false,
-                    priceLineVisible: false,
-                    crosshairMarkerVisible: false,
-                    pointMarkersVisible: false,
+                    dashed: o.order_type === 'STP',
                 });
-                series.setData([
-                    { time: seg.from, value: o.price },
-                    { time: seg.to, value: o.price },
-                ]);
-                overlayOrderSeries.push(series);
             }
+            // Tri par t0 pour parcours viewport O(k) au lieu de O(n)
+            overlayOrdersParsed.sort((a, b) => a.t0 - b.t0 || a.t1 - b.t1);
+        }
+
+        /** Premier index avec t1 >= t (ordres triés par t0 ; approx utile). */
+        function firstOrderIndexPossiblyVisible(visFrom) {
+            const arr = overlayOrdersParsed;
+            // t0 croissant : on peut sauter ceux avec t1 < visFrom seulement en scan;
+            // borne basse sûre = premier t0 qui pourrait encore chevaucher si t1 long.
+            // Scan linéaire court grâce au break sur t0 > visTo côté caller.
+            let i = 0;
+            // Avance grossière : tant que t0+maxSpan < visFrom… sans maxSpan, skip t1 < visFrom
+            while (i < arr.length && arr[i].t1 < visFrom) i++;
+            return i;
+        }
+
+        function clearOverlayDrawings() {
+            overlayTxParsed = [];
+            overlayOrdersParsed = [];
+            if (seriesMarkersApi) seriesMarkersApi.setMarkers([]);
+            if (overlayCtx && overlayCanvas) {
+                overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+            }
+        }
+
+        function resizeOverlayCanvas(cssW, cssH) {
+            if (!overlayCanvas || !overlayCtx) return;
+            const dpr = window.devicePixelRatio || 1;
+            const w = Math.max(1, Math.floor(cssW * dpr));
+            const h = Math.max(1, Math.floor(cssH * dpr));
+            if (overlayCanvas.width !== w || overlayCanvas.height !== h) {
+                overlayCanvas.width = w;
+                overlayCanvas.height = h;
+            }
+            overlayCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        }
+
+        function scheduleOverlayCanvasDraw() {
+            if (overlayDrawRaf) return;
+            overlayDrawRaf = requestAnimationFrame(() => {
+                overlayDrawRaf = 0;
+                drawOverlayOrdersCanvas();
+            });
+        }
+
+        function drawOverlayOrdersCanvas() {
+            if (!overlayCtx || !overlayCanvas || !chart || !candleSeries) return;
+            const cssW = overlayCanvas.clientWidth;
+            const cssH = overlayCanvas.clientHeight;
+            if (cssW <= 0 || cssH <= 0) return;
+            resizeOverlayCanvas(cssW, cssH);
+            overlayCtx.clearRect(0, 0, cssW, cssH);
+            if (!overlayOrdersParsed.length) return;
+
+            const range = chart.timeScale().getVisibleRange();
+            const visFrom = range ? range.from : null;
+            const visTo = range ? range.to : null;
+
+            // Clip au pane candles (évite de dessiner sur le volume)
+            let paneH = cssH;
+            try {
+                const panes = chart.panes && chart.panes();
+                if (panes && panes.length && typeof panes[0].getHeight === 'function') {
+                    paneH = panes[0].getHeight();
+                }
+            } catch (_) { /* fallback full height */ }
+
+            overlayCtx.save();
+            overlayCtx.beginPath();
+            overlayCtx.rect(0, 0, cssW, paneH);
+            overlayCtx.clip();
+            overlayCtx.lineWidth = 1;
+            overlayCtx.lineCap = 'butt';
+
+            const ts = chart.timeScale();
+            const start = (visFrom != null) ? firstOrderIndexPossiblyVisible(visFrom) : 0;
+            for (let i = start; i < overlayOrdersParsed.length; i++) {
+                const o = overlayOrdersParsed[i];
+                if (visTo != null && o.t0 > visTo) break;
+                if (visFrom != null && o.t1 < visFrom) continue;
+                const seg = orderSegmentTimes(o.t0, o.t1);
+                if (!seg) continue;
+                let x0 = ts.timeToCoordinate(seg.from);
+                let x1 = ts.timeToCoordinate(seg.to);
+                const y = candleSeries.priceToCoordinate(o.price);
+                if (y == null || y < 0 || y > paneH) continue;
+                // Segment partiellement hors vue : clamp sur le bord canvas
+                if (x0 == null && x1 == null) continue;
+                if (x0 == null) x0 = seg.from < (visFrom ?? seg.from) ? 0 : cssW;
+                if (x1 == null) x1 = seg.to > (visTo ?? seg.to) ? cssW : 0;
+                if (x0 === x1) continue;
+
+                overlayCtx.strokeStyle = o.color;
+                overlayCtx.setLineDash(o.dashed ? [5, 4] : []);
+                overlayCtx.beginPath();
+                overlayCtx.moveTo(x0, y);
+                overlayCtx.lineTo(x1, y);
+                overlayCtx.stroke();
+            }
+            overlayCtx.restore();
+        }
+
+        /** Markers au load / update candles — pas à chaque pan. */
+        function applyOverlayMarkers() {
+            if (!candleSeries) return;
             if (!seriesMarkersApi && LightweightCharts.createSeriesMarkers) {
                 seriesMarkersApi = LightweightCharts.createSeriesMarkers(candleSeries, []);
             }
-            if (seriesMarkersApi) {
-                const markers = [];
-                for (const t of overlayTx) {
-                    const unix = toUnix(t.time);
-                    if (unix == null || t.price == null) continue;
-                    markers.push({
-                        time: snapTime(unix),
-                        price: t.price,
-                        position: 'atPriceMiddle',
-                        shape: 'circle',
-                        color: t.side === 'buy' ? BUY : SELL,
-                        size: 0.75,
-                    });
-                }
-                seriesMarkersApi.setMarkers(markers);
+            if (!seriesMarkersApi) return;
+            if (!overlayTxParsed.length || !allCandles.length) {
+                seriesMarkersApi.setMarkers([]);
+                return;
             }
+            const tMin = allCandles[0].time;
+            const tMax = allCandles[allCandles.length - 1].time;
+            const markers = [];
+            for (const t of overlayTxParsed) {
+                if (t.time < tMin || t.time > tMax) continue;
+                markers.push({
+                    time: snapTime(t.time),
+                    price: t.price,
+                    position: 'atPriceMiddle',
+                    shape: 'circle',
+                    color: t.color,
+                    size: 0.75,
+                });
+            }
+            // déjà triés via overlayTxParsed ; re-sort au cas où snap regroupe
+            markers.sort((a, b) => a.time - b.time || a.price - b.price);
+            seriesMarkersApi.setMarkers(markers);
         }
 
         async function fetchOverlayPayload(stem, id) {
@@ -529,21 +651,18 @@
             if (!payload) return;
             overlayTx = payload.transactions || [];
             overlayOrders = payload.orders || [];
+            parseOverlayPayload();
             await ensureCandlesAroundOverlay();
-            applyOverlayDrawings();
+            applyOverlayMarkers();
+            scheduleOverlayCanvasDraw();
         }
 
         async function ensureCandlesAroundOverlay() {
             const times = [];
-            for (const t of overlayTx) {
-                const u = toUnix(t.time);
-                if (u != null) times.push(u);
-            }
-            for (const o of overlayOrders) {
-                const a = toUnix(o.time_from);
-                const b = toUnix(o.time_to);
-                if (a != null) times.push(a);
-                if (b != null) times.push(b);
+            for (const t of overlayTxParsed) times.push(t.time);
+            for (const o of overlayOrdersParsed) {
+                times.push(o.t0);
+                times.push(o.t1);
             }
             if (!times.length) return;
             const first = Math.min(...times);
