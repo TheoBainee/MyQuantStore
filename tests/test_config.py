@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from myquantstore.config import Settings, generate_run_ts, load_settings
+from myquantstore.config import Settings, generate_run_ts, load_settings, normalize_hex_color
 from myquantstore.instruments import Instrument, InstrumentType
 
 
@@ -134,11 +134,86 @@ level = "INFO"
         assert settings.max_visible_candles == 100000
         assert settings.chart_port == 8050
         assert settings.chart_host == "127.0.0.1"
+        assert settings.chart_candle_up == "#26A69A"
+        assert settings.chart_candle_down == "#EF5350"
+        assert settings.chart_tx_buy == "#2196F3"
+        assert settings.chart_tx_sell == "#FF9800"
+        assert settings.chart_order_buy == "#2196F3"
+        assert settings.chart_order_sell == "#FF9800"
         assert settings.serve_port == 8741
         assert settings.serve_host == "127.0.0.1"
         assert settings.data_dir == "~/.local/share/myquantstore/data"
         assert settings.cache_dir == "~/.local/share/myquantstore/cache"
         assert settings.log_dir == "~/.local/share/myquantstore/logs"
+
+    def test_normalize_hex_color(self):
+        assert normalize_hex_color("26a69a") == "#26A69A"
+        assert normalize_hex_color("#ff9800") == "#FF9800"
+        assert normalize_hex_color("f80") == "#FF8800"
+        with pytest.raises(ValueError, match="hex"):
+            normalize_hex_color("not-a-color")
+
+    def test_chart_colors_and_overlay_nested(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        config_toml = tmp_path / "config.toml"
+        config_toml.write_text(
+            """
+[instruments]
+futures = ["ES"]
+forex = []
+stocks = []
+indices = []
+options = []
+
+[chart]
+candle_up = "0FFF14"
+candle_down = "#112233"
+
+[chart.overlay]
+overlay_dir = "~/overlays_nested"
+
+[chart.overlay.backtest]
+transaction_buy = "00ff00"
+transaction_sell = "ff0000"
+order_buy = "0000ff"
+order_sell = "ffa500"
+""",
+            encoding="utf-8",
+        )
+        (tmp_path / ".env").write_text("MASSIVE_API_KEY=test_key\n", encoding="utf-8")
+        settings = load_settings(config_path=config_toml)
+        assert settings.chart_candle_up == "#0FFF14"
+        assert settings.chart_candle_down == "#112233"
+        assert settings.overlay_dir.endswith("overlays_nested")
+        assert settings.chart_tx_buy == "#00FF00"
+        assert settings.chart_tx_sell == "#FF0000"
+        assert settings.chart_order_buy == "#0000FF"
+        assert settings.chart_order_sell == "#FFA500"
+
+    def test_overlay_dir_flat_backward_compat(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        config_toml = tmp_path / "config.toml"
+        config_toml.write_text(
+            """
+[instruments]
+futures = ["ES"]
+forex = []
+stocks = []
+indices = []
+options = []
+
+[chart]
+overlay_dir = "/tmp/flat_overlays"
+""",
+            encoding="utf-8",
+        )
+        (tmp_path / ".env").write_text("MASSIVE_API_KEY=test_key\n", encoding="utf-8")
+        settings = load_settings(config_path=config_toml)
+        assert settings.overlay_dir == "/tmp/flat_overlays"
 
     def test_validation_all_instruments_empty_raises(self):
         """Tous les types vides → erreur."""

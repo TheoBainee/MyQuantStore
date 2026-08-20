@@ -91,6 +91,22 @@
         const FETCH_CHUNK_SIZE = parseInt("__FETCH_CHUNK_SIZE__");
         const INTRADAY_BEGIN = __INTRADAY_BEGIN__;
         const INTRADAY_END = __INTRADAY_END__;
+        const CANDLE_UP = "__CANDLE_UP__";
+        const CANDLE_DOWN = "__CANDLE_DOWN__";
+        const TX_BUY = "__TX_BUY__";
+        const TX_SELL = "__TX_SELL__";
+        const ORDER_BUY = "__ORDER_BUY__";
+        const ORDER_SELL = "__ORDER_SELL__";
+
+        function hexToRgba(hex, alpha) {
+            let h = String(hex || '').replace('#', '');
+            if (h.length === 3) h = h.split('').map(c => c + c).join('');
+            const n = parseInt(h, 16);
+            if (Number.isNaN(n) || h.length !== 6) return `rgba(128,128,128,${alpha})`;
+            return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${alpha})`;
+        }
+        const VOL_UP = hexToRgba(CANDLE_UP, 0.5);
+        const VOL_DOWN = hexToRgba(CANDLE_DOWN, 0.5);
 
         // --- État global ---
         let chart, candleSeries, volumeSeries;
@@ -130,9 +146,9 @@
 
             // Pane 0 : candlestick
             candleSeries = chart.addSeries(LightweightCharts.CandlestickSeries, {
-                upColor: '#26a69a', downColor: '#ef5350',
+                upColor: CANDLE_UP, downColor: CANDLE_DOWN,
                 borderVisible: false,
-                wickUpColor: '#26a69a', wickDownColor: '#ef5350',
+                wickUpColor: CANDLE_UP, wickDownColor: CANDLE_DOWN,
             });
 
             // Pane 1 : volume (histogram)
@@ -347,7 +363,7 @@
             }));
             const volumeData = allCandles.map(c => ({
                 time: c.time, value: c.volume,
-                color: c.close >= c.open ? 'rgba(38,166,154,0.5)' : 'rgba(239,83,80,0.5)',
+                color: c.close >= c.open ? VOL_UP : VOL_DOWN,
             }));
             candleSeries.setData(candleData);
             volumeSeries.setData(volumeData);
@@ -410,9 +426,6 @@
         });
 
         // --- Overlay backtests ---
-        const BUY = '#26a69a';
-        const SELL = '#ef5350';
-
         function toUnix(iso) {
             if (!iso) return null;
             const ms = Date.parse(iso);
@@ -482,7 +495,7 @@
                 overlayTxParsed.push({
                     time,
                     price: t.price,
-                    color: t.side === 'buy' ? BUY : SELL,
+                    color: t.side === 'buy' ? TX_BUY : TX_SELL,
                 });
             }
             overlayTxParsed.sort((a, b) => a.time - b.time);
@@ -496,7 +509,7 @@
                     t0,
                     t1: t1 != null ? t1 : t0,
                     price: o.price,
-                    color: o.side === 'buy' ? BUY : SELL,
+                    color: o.side === 'buy' ? ORDER_BUY : ORDER_SELL,
                     dashed: o.order_type === 'STP',
                 });
             }

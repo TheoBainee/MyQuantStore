@@ -137,8 +137,20 @@ mdns = false # myquantstore-chart.local
 # Fenêtre des miniatures SVG du dashboard (jours, agrégé 1day Yahoo).
 # 90 ≈ 3 mois ; 365 ≈ YOY.
 thumbnail_lookback_days = 90
+# Couleurs chandeliers (hex, # optionnel).
+candle_up = "26a69a"
+candle_down = "ef5350"
+
+[chart.overlay]
 # Racine des overlays (sous-dossier Backtests/). Vide = désactivé.
 # overlay_dir = "/chemin/vers/overlays"
+
+[chart.overlay.backtest]
+# Couleurs markers transactions / segments ordres (hex).
+transaction_buy = "2196F3"
+transaction_sell = "FF9800"
+order_buy = "2196F3"
+order_sell = "FF9800"
 
 [serve]
 # API HTTP query (commande `myquantstore serve`).

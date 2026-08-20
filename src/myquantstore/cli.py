@@ -2327,6 +2327,12 @@ def _cmd_chart(settings: Settings, args: argparse.Namespace) -> int:
         adjust_rollover=args.adjust,
         no_split=args.no_split,
         thumbnail_lookback_days=settings.thumbnail_lookback_days,
+        candle_up=settings.chart_candle_up,
+        candle_down=settings.chart_candle_down,
+        tx_buy=settings.chart_tx_buy,
+        tx_sell=settings.chart_tx_sell,
+        order_buy=settings.chart_order_buy,
+        order_sell=settings.chart_order_sell,
     )
 
     start_url = (

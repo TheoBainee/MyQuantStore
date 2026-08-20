@@ -23,10 +23,32 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from pydantic import field_validator, model_validator
+from pydantic import ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from myquantstore.instruments import DEFAULT_RESOLUTION, Instrument, InstrumentType
+
+# Couleurs chart par défaut (hex #RRGGBB)
+_DEFAULT_CANDLE_UP = "#26a69a"
+_DEFAULT_CANDLE_DOWN = "#ef5350"
+_DEFAULT_TX_BUY = "#2196F3"
+_DEFAULT_TX_SELL = "#FF9800"
+_DEFAULT_ORDER_BUY = "#2196F3"
+_DEFAULT_ORDER_SELL = "#FF9800"
+
+
+def normalize_hex_color(value: str, *, field_name: str = "color") -> str:
+    """Normalise une couleur hex (avec/sans ``#``, 3 ou 6 digits) → ``#RRGGBB``."""
+    raw = str(value).strip()
+    if raw.startswith("#"):
+        raw = raw[1:]
+    if len(raw) == 3 and all(c in "0123456789abcdefABCDEF" for c in raw):
+        raw = "".join(c * 2 for c in raw)
+    if len(raw) != 6 or any(c not in "0123456789abcdefABCDEF" for c in raw):
+        raise ValueError(
+            f"{field_name} doit être un hex 3/6 digits (ex: 26a69a ou #FF9800), reçu: {value!r}"
+        )
+    return f"#{raw.upper()}"
 
 
 def get_user_config_dir() -> Path:
@@ -203,8 +225,17 @@ class Settings(BaseSettings):
     chart_mdns: bool = False
     # Fenêtre des miniatures dashboard (jours calendaires, track 1day Yahoo).
     thumbnail_lookback_days: int = 90
+    # Couleurs chandeliers (hex).
+    chart_candle_up: str = _DEFAULT_CANDLE_UP
+    chart_candle_down: str = _DEFAULT_CANDLE_DOWN
     # Racine des overlays (sous-dossier Backtests/). Vide = désactivé.
+    # TOML: [chart.overlay] overlay_dir (rétrocompat: [chart] overlay_dir).
     overlay_dir: str = ""
+    # Couleurs overlay backtest (hex) — [chart.overlay.backtest]
+    chart_tx_buy: str = _DEFAULT_TX_BUY
+    chart_tx_sell: str = _DEFAULT_TX_SELL
+    chart_order_buy: str = _DEFAULT_ORDER_BUY
+    chart_order_sell: str = _DEFAULT_ORDER_SELL
 
     # --- Serve / API query (config.toml: [serve]) ---
     # Bind de ``myquantstore serve`` si --host / --port absents.
@@ -226,6 +257,19 @@ class Settings(BaseSettings):
     portfolio_default_value: float = 20000.0
 
     # --- Validations ---
+
+    @field_validator(
+        "chart_candle_up",
+        "chart_candle_down",
+        "chart_tx_buy",
+        "chart_tx_sell",
+        "chart_order_buy",
+        "chart_order_sell",
+        mode="before",
+    )
+    @classmethod
+    def _chart_hex_colors(cls, v: Any, info: ValidationInfo) -> str:
+        return normalize_hex_color(str(v), field_name=info.field_name)
 
     @field_validator("overlap_buffer_days")
     @classmethod
@@ -719,6 +763,12 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
     logging_section = toml_data.get("logging", {})
     display = toml_data.get("display", {})
     chart = toml_data.get("chart", {})
+    chart_overlay = chart.get("overlay") if isinstance(chart.get("overlay"), dict) else {}
+    chart_overlay_bt = (
+        chart_overlay.get("backtest")
+        if isinstance(chart_overlay.get("backtest"), dict)
+        else {}
+    )
     serve_cfg = toml_data.get("serve", {})
     portfolio_cfg = toml_data.get("portfolio", {})
     yahoo_cfg = toml_data.get("yahoo", {})
@@ -782,7 +832,22 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
             "thumbnail_lookback_days": chart.get(
                 "thumbnail_lookback_days", data["thumbnail_lookback_days"]
             ),
-            "overlay_dir": _expand_path_str(chart.get("overlay_dir", data["overlay_dir"])),
+            "chart_candle_up": chart.get("candle_up", data["chart_candle_up"]),
+            "chart_candle_down": chart.get("candle_down", data["chart_candle_down"]),
+            # [chart.overlay] (+ rétrocompat [chart].overlay_dir)
+            "overlay_dir": _expand_path_str(
+                chart_overlay.get("overlay_dir")
+                or chart.get("overlay_dir")
+                or data["overlay_dir"]
+            ),
+            "chart_tx_buy": chart_overlay_bt.get("transaction_buy", data["chart_tx_buy"]),
+            "chart_tx_sell": chart_overlay_bt.get(
+                "transaction_sell", data["chart_tx_sell"]
+            ),
+            "chart_order_buy": chart_overlay_bt.get("order_buy", data["chart_order_buy"]),
+            "chart_order_sell": chart_overlay_bt.get(
+                "order_sell", data["chart_order_sell"]
+            ),
             # [serve]
             "serve_port": serve_cfg.get("port", data["serve_port"]),
             "serve_host": serve_cfg.get("host", data["serve_host"]),

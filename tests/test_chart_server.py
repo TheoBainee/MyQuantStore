@@ -365,6 +365,32 @@ def _write_sample_overlay(root: Path, *, instrument: str = "futures:ES") -> None
     ).write_parquet(back / f"{stem}.orders.parquet")
 
 
+class TestChartColorInjection:
+    def test_html_injects_configured_colors(self, chart_setup):
+        settings, instruments, chains, _ = chart_setup
+        defaults = ChartDefaults(
+            default_product="futures:ES",
+            candle_up="#0FFF14",
+            candle_down="#112233",
+            tx_buy="#00AAFF",
+            tx_sell="#FFAA00",
+            order_buy="#0011FF",
+            order_sell="#FF6600",
+        )
+        app = create_chart_app(settings, instruments, chains, defaults)
+        client = TestClient(app)
+        resp = client.get("/futures:ES")
+        assert resp.status_code == 200
+        html = resp.text
+        assert 'const CANDLE_UP = "#0FFF14"' in html
+        assert 'const CANDLE_DOWN = "#112233"' in html
+        assert 'const TX_BUY = "#00AAFF"' in html
+        assert 'const TX_SELL = "#FFAA00"' in html
+        assert 'const ORDER_BUY = "#0011FF"' in html
+        assert 'const ORDER_SELL = "#FF6600"' in html
+        assert "__CANDLE_UP__" not in html
+
+
 class TestOverlayApi:
     def test_list_empty_without_dir(self, chart_setup):
         settings, instruments, chains, defaults = chart_setup

@@ -385,6 +385,12 @@ class ChartDefaults:
         adjust_rollover: bool = False,
         no_split: bool = False,
         thumbnail_lookback_days: int = 90,
+        candle_up: str = "#26a69a",
+        candle_down: str = "#ef5350",
+        tx_buy: str = "#2196F3",
+        tx_sell: str = "#FF9800",
+        order_buy: str = "#2196F3",
+        order_sell: str = "#FF9800",
     ) -> None:
         self.default_product = default_product
         self.timescale_unit = timescale_unit
@@ -399,6 +405,12 @@ class ChartDefaults:
         self.adjust_rollover = adjust_rollover
         self.no_split = no_split
         self.thumbnail_lookback_days = thumbnail_lookback_days
+        self.candle_up = candle_up
+        self.candle_down = candle_down
+        self.tx_buy = tx_buy
+        self.tx_sell = tx_sell
+        self.order_buy = order_buy
+        self.order_sell = order_sell
 
 
 def _timescale_to_params(unit: str, nb: int) -> tuple[str, int, int]:
@@ -540,6 +552,12 @@ def _render_chart_html(instrument_key: str, defaults: ChartDefaults) -> str:
         "__INTRADAY_BEGIN__": intraday_begin_str,
         "__INTRADAY_END__": intraday_end_str,
         "__NORMALIZE_TICK_SIZE__": str(defaults.normalize_tick_size).lower(),
+        "__CANDLE_UP__": defaults.candle_up,
+        "__CANDLE_DOWN__": defaults.candle_down,
+        "__TX_BUY__": defaults.tx_buy,
+        "__TX_SELL__": defaults.tx_sell,
+        "__ORDER_BUY__": defaults.order_buy,
+        "__ORDER_SELL__": defaults.order_sell,
     }
 
     for key, value in replacements.items():

@@ -78,6 +78,17 @@ port = 8050
 host = "127.0.0.1"
 mdns = false
 thumbnail_lookback_days = 90
+candle_up = "26a69a"
+candle_down = "ef5350"
+
+[chart.overlay]
+# overlay_dir = ""
+
+[chart.overlay.backtest]
+transaction_buy = "2196F3"
+transaction_sell = "FF9800"
+order_buy = "2196F3"
+order_sell = "FF9800"
 
 [serve]
 port = 8741
