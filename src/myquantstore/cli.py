@@ -847,13 +847,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "--intraday-begin",
         default=None,
         metavar="HH:MM",
-        help="Filtre session début (intraday)",
+        help="Filtre session début (intraday). Défaut: [chart] intraday_begin",
     )
     p_chart.add_argument(
         "--intraday-end",
         default=None,
         metavar="HH:MM",
-        help="Filtre session fin (intraday)",
+        help="Filtre session fin (intraday). Défaut: [chart] intraday_end",
     )
     p_chart.add_argument(
         "--normalize-tick-size",
@@ -2214,26 +2214,46 @@ def _cmd_chart(settings: Settings, args: argparse.Namespace) -> int:
         )
         nb_candle = settings.max_visible_candles
 
-    intraday_begin = None
-    intraday_end = None
-    if args.intraday_begin:
-        try:
-            intraday_begin = time_cls.fromisoformat(args.intraday_begin)
-        except ValueError:
-            console.print(f"[red]Erreur:[/red] --intraday-begin invalide : '{args.intraday_begin}'. Format: HH:MM.")
+    # CLI override ; sinon défauts [chart] intraday_begin/end
+    intraday_begin = settings.chart_intraday_begin
+    intraday_end = settings.chart_intraday_end
+    if args.intraday_begin is not None or args.intraday_end is not None:
+        intraday_begin = None
+        intraday_end = None
+        if args.intraday_begin:
+            try:
+                intraday_begin = time_cls.fromisoformat(args.intraday_begin)
+            except ValueError:
+                console.print(
+                    f"[red]Erreur:[/red] --intraday-begin invalide : "
+                    f"'{args.intraday_begin}'. Format: HH:MM."
+                )
+                return 1
+        if args.intraday_end:
+            try:
+                intraday_end = time_cls.fromisoformat(args.intraday_end)
+            except ValueError:
+                console.print(
+                    f"[red]Erreur:[/red] --intraday-end invalide : "
+                    f"'{args.intraday_end}'. Format: HH:MM."
+                )
+                return 1
+        if (intraday_begin is None) != (intraday_end is None):
+            console.print(
+                "[red]Erreur:[/red] --intraday-begin et --intraday-end "
+                "doivent être fournis ensemble."
+            )
             return 1
-    if args.intraday_end:
-        try:
-            intraday_end = time_cls.fromisoformat(args.intraday_end)
-        except ValueError:
-            console.print(f"[red]Erreur:[/red] --intraday-end invalide : '{args.intraday_end}'. Format: HH:MM.")
+        if (
+            intraday_begin is not None
+            and intraday_end is not None
+            and intraday_begin == intraday_end
+        ):
+            console.print(
+                "[red]Erreur:[/red] --intraday-begin et --intraday-end "
+                "doivent être différents."
+            )
             return 1
-    if (intraday_begin is None) != (intraday_end is None):
-        console.print("[red]Erreur:[/red] --intraday-begin et --intraday-end doivent être fournis ensemble.")
-        return 1
-    if intraday_begin is not None and intraday_end is not None and intraday_begin == intraday_end:
-        console.print("[red]Erreur:[/red] --intraday-begin et --intraday-end doivent être différents.")
-        return 1
 
     # Construire les chaînes pour tous les instruments avec agrégé (1min et/ou 1day)
     from myquantstore.api.client import MassiveClient

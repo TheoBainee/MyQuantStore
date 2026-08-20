@@ -19,7 +19,7 @@ Les paramètres spécifiques à un type vivent dans leur propre section
 from __future__ import annotations
 
 import tomllib
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time
 from pathlib import Path
 from typing import Any
 
@@ -223,6 +223,9 @@ class Settings(BaseSettings):
     chart_port: int = 8050
     chart_host: str = "127.0.0.1"
     chart_mdns: bool = False
+    # Filtre session intraday chart (HH:MM) — les deux ou aucun. CLI override.
+    chart_intraday_begin: time | None = None
+    chart_intraday_end: time | None = None
     # Fenêtre des miniatures dashboard (jours calendaires, track 1day Yahoo).
     thumbnail_lookback_days: int = 90
     # Couleurs chandeliers (hex).
@@ -270,6 +273,20 @@ class Settings(BaseSettings):
     @classmethod
     def _chart_hex_colors(cls, v: Any, info: ValidationInfo) -> str:
         return normalize_hex_color(str(v), field_name=info.field_name)
+
+    @field_validator("chart_intraday_begin", "chart_intraday_end", mode="before")
+    @classmethod
+    def _chart_intraday_time(cls, v: Any, info: ValidationInfo) -> time | None:
+        if v is None or v == "":
+            return None
+        if isinstance(v, time):
+            return v
+        try:
+            return time.fromisoformat(str(v).strip())
+        except ValueError as exc:
+            raise ValueError(
+                f"{info.field_name} doit être HH:MM (reçu: {v!r})"
+            ) from exc
 
     @field_validator("overlap_buffer_days")
     @classmethod
@@ -453,6 +470,21 @@ class Settings(BaseSettings):
             raise ValueError(
                 "Aucun instrument configuré. Déclarez au moins un symbole dans "
                 "[instruments] (futures, forex, stocks, indices ou options)."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _check_chart_intraday_pair(self) -> Settings:
+        """intraday_begin/end chart : les deux ou aucun, et différents."""
+        begin, end = self.chart_intraday_begin, self.chart_intraday_end
+        if (begin is None) != (end is None):
+            raise ValueError(
+                "chart intraday_begin et intraday_end doivent être fournis ensemble "
+                "(ou tous deux absents)."
+            )
+        if begin is not None and end is not None and begin == end:
+            raise ValueError(
+                "chart intraday_begin et intraday_end doivent être différents."
             )
         return self
 
@@ -829,6 +861,12 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
             "chart_port": chart.get("port", data["chart_port"]),
             "chart_host": chart.get("host", data["chart_host"]),
             "chart_mdns": chart.get("mdns", data["chart_mdns"]),
+            "chart_intraday_begin": chart.get(
+                "intraday_begin", data["chart_intraday_begin"]
+            ),
+            "chart_intraday_end": chart.get(
+                "intraday_end", data["chart_intraday_end"]
+            ),
             "thumbnail_lookback_days": chart.get(
                 "thumbnail_lookback_days", data["thumbnail_lookback_days"]
             ),

@@ -78,6 +78,8 @@ port = 8050
 host = "127.0.0.1"
 mdns = false
 thumbnail_lookback_days = 90
+# intraday_begin = "09:30"
+# intraday_end = "16:00"
 candle_up = "26a69a"
 candle_down = "ef5350"
 

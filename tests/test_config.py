@@ -215,6 +215,56 @@ overlay_dir = "/tmp/flat_overlays"
         settings = load_settings(config_path=config_toml)
         assert settings.overlay_dir == "/tmp/flat_overlays"
 
+    def test_chart_intraday_from_toml(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        from datetime import time as time_cls
+
+        monkeypatch.chdir(tmp_path)
+        config_toml = tmp_path / "config.toml"
+        config_toml.write_text(
+            """
+[instruments]
+futures = ["ES"]
+forex = []
+stocks = []
+indices = []
+options = []
+
+[chart]
+intraday_begin = "09:30"
+intraday_end = "16:00"
+""",
+            encoding="utf-8",
+        )
+        (tmp_path / ".env").write_text("MASSIVE_API_KEY=test_key\n", encoding="utf-8")
+        settings = load_settings(config_path=config_toml)
+        assert settings.chart_intraday_begin == time_cls(9, 30)
+        assert settings.chart_intraday_end == time_cls(16, 0)
+
+    def test_chart_intraday_pair_required(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        config_toml = tmp_path / "config.toml"
+        config_toml.write_text(
+            """
+[instruments]
+futures = ["ES"]
+forex = []
+stocks = []
+indices = []
+options = []
+
+[chart]
+intraday_begin = "09:30"
+""",
+            encoding="utf-8",
+        )
+        (tmp_path / ".env").write_text("MASSIVE_API_KEY=test_key\n", encoding="utf-8")
+        with pytest.raises(Exception, match="intraday"):
+            load_settings(config_path=config_toml)
+
     def test_validation_all_instruments_empty_raises(self):
         """Tous les types vides → erreur."""
         with pytest.raises(Exception, match="Aucun instrument"):

@@ -137,6 +137,9 @@ mdns = false # myquantstore-chart.local
 # Fenêtre des miniatures SVG du dashboard (jours, agrégé 1day Yahoo).
 # 90 ≈ 3 mois ; 365 ≈ YOY.
 thumbnail_lookback_days = 90
+# Filtre session intraday (HH:MM) — les deux ou aucun. Override CLI --intraday-*.
+# intraday_begin = "09:30"
+# intraday_end = "16:00"
 # Couleurs chandeliers (hex, # optionnel).
 candle_up = "26a69a"
 candle_down = "ef5350"
