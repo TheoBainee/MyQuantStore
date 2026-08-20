@@ -97,7 +97,7 @@
         let overlayCatalog = [];
         let overlayTx = [];
         let overlayOrders = [];
-        let overlayPriceLines = [];
+        let overlayOrderSeries = [];
         let seriesMarkersApi = null;
 
         // --- Création du chart ---
@@ -403,6 +403,17 @@
             return Number.isNaN(ms) ? null : Math.floor(ms / 1000);
         }
 
+        function barSeconds() {
+            const n = currentTimescale.nb || 1;
+            switch (currentTimescale.unit) {
+                case 'min': return n * 60;
+                case 'hour': return n * 3600;
+                case 'day': return n * 86400;
+                case 'week': return n * 604800;
+                default: return n * 60;
+            }
+        }
+
         function snapTime(unix) {
             if (!allCandles.length) return unix;
             let best = allCandles[0].time;
@@ -413,16 +424,39 @@
             return best;
         }
 
-        function clearOverlayDrawings() {
-            for (const line of overlayPriceLines) {
-                candleSeries.removePriceLine(line);
+        function nextCandleTime(unix) {
+            if (!allCandles.length) return unix + barSeconds();
+            for (const c of allCandles) {
+                if (c.time > unix) return c.time;
             }
-            overlayPriceLines = [];
+            return unix + barSeconds();
+        }
+
+        /** Segment pending [time_from, time_to] ; durée 0 → 1 chandelier. */
+        function orderSegmentTimes(t0, t1) {
+            if (t0 == null) return null;
+            let from = snapTime(t0);
+            let toRaw = t1 != null ? t1 : t0;
+            let to;
+            if (toRaw <= t0) {
+                to = nextCandleTime(from);
+            } else {
+                to = snapTime(toRaw);
+                if (to <= from) to = nextCandleTime(from);
+            }
+            return { from, to };
+        }
+
+        function clearOverlayDrawings() {
+            for (const s of overlayOrderSeries) {
+                try { chart.removeSeries(s); } catch (_) { /* already gone */ }
+            }
+            overlayOrderSeries = [];
             if (seriesMarkersApi) seriesMarkersApi.setMarkers([]);
         }
 
         function applyOverlayDrawings() {
-            if (!candleSeries) return;
+            if (!candleSeries || !chart) return;
             clearOverlayDrawings();
             const range = chart.timeScale().getVisibleRange();
             const visFrom = range ? range.from : null;
@@ -431,19 +465,29 @@
                 if (o.order_type === 'MKT' || o.price == null) continue;
                 const t0 = toUnix(o.time_from);
                 const t1 = toUnix(o.time_to);
-                if (visFrom != null && visTo != null && t0 != null && t1 != null) {
-                    if (t1 < visFrom || t0 > visTo) continue;
+                if (t0 == null) continue;
+                const t1eff = t1 != null ? t1 : t0;
+                if (visFrom != null && visTo != null) {
+                    if (t1eff < visFrom || t0 > visTo) continue;
                 }
-                overlayPriceLines.push(candleSeries.createPriceLine({
-                    price: o.price,
+                const seg = orderSegmentTimes(t0, t1);
+                if (!seg) continue;
+                const series = chart.addSeries(LightweightCharts.LineSeries, {
                     color: o.side === 'buy' ? BUY : SELL,
                     lineWidth: 1,
                     lineStyle: o.order_type === 'STP'
                         ? LightweightCharts.LineStyle.Dashed
                         : LightweightCharts.LineStyle.Solid,
-                    axisLabelVisible: true,
-                    title: o.order_type || '',
-                }));
+                    lastValueVisible: false,
+                    priceLineVisible: false,
+                    crosshairMarkerVisible: false,
+                    pointMarkersVisible: false,
+                });
+                series.setData([
+                    { time: seg.from, value: o.price },
+                    { time: seg.to, value: o.price },
+                ]);
+                overlayOrderSeries.push(series);
             }
             if (!seriesMarkersApi && LightweightCharts.createSeriesMarkers) {
                 seriesMarkersApi = LightweightCharts.createSeriesMarkers(candleSeries, []);
@@ -490,7 +534,17 @@
         }
 
         async function ensureCandlesAroundOverlay() {
-            const times = overlayTx.map(t => toUnix(t.time)).filter(t => t != null);
+            const times = [];
+            for (const t of overlayTx) {
+                const u = toUnix(t.time);
+                if (u != null) times.push(u);
+            }
+            for (const o of overlayOrders) {
+                const a = toUnix(o.time_from);
+                const b = toUnix(o.time_to);
+                if (a != null) times.push(a);
+                if (b != null) times.push(b);
+            }
             if (!times.length) return;
             const first = Math.min(...times);
             const last = Math.max(...times);
