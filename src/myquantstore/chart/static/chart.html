@@ -699,6 +699,7 @@
         }
 
         async function applyOverlaySelection() {
+            // Calque pur : markers + segments uniquement — pas de reload candles ni jump pan.
             const sel = document.getElementById('overlay-select');
             const value = sel.value;
             overlayTx = [];
@@ -711,41 +712,8 @@
             overlayTx = payload.transactions || [];
             overlayOrders = payload.orders || [];
             parseOverlayPayload();
-            await ensureCandlesAroundOverlay();
             applyOverlayMarkers();
             scheduleOverlayCanvasDraw();
-        }
-
-        async function ensureCandlesAroundOverlay() {
-            const times = [];
-            for (const t of overlayTxParsed) times.push(t.time);
-            for (const o of overlayOrdersParsed) {
-                times.push(o.t0);
-                times.push(o.t1);
-            }
-            if (!times.length) return;
-            const first = Math.min(...times);
-            const last = Math.max(...times);
-            const loadedFirst = allCandles.length ? allCandles[0].time : null;
-            const loadedLast = allCandles.length ? allCandles[allCandles.length - 1].time : null;
-            if (loadedFirst != null && first >= loadedFirst && last <= loadedLast) {
-                chart.timeScale().setVisibleRange({ from: last - 3600, to: last + 60 });
-                return;
-            }
-            const after = new Date((first - 3600) * 1000).toISOString();
-            const before = new Date((last + 3600) * 1000).toISOString();
-            const url = `/api/candles?product=${PRODUCT}&timescale_unit=${currentTimescale.unit}&timescale_nb=${currentTimescale.nb}&limit=${MAX_VISIBLE_CANDLES}&after=${after}&before=${before}`;
-            const resp = await fetch(url);
-            if (!resp.ok) return;
-            const buffer = await resp.arrayBuffer();
-            if (buffer.byteLength === 0) return;
-            allCandles = parseArrowIpc(buffer);
-            if (!allCandles.length) return;
-            oldestTimestamp = allCandles[0].time;
-            noMoreData = false;
-            updateChart();
-            chart.timeScale().setVisibleRange({ from: last - 3600, to: last + 60 });
-            updateInfoBar();
         }
 
         async function initOverlays() {
