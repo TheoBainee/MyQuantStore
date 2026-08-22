@@ -547,6 +547,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "  myquantstore config\n"
             "  myquantstore config --paths\n"
             "  myquantstore config add AAPL MSFT --type stocks\n"
+            "  myquantstore config add AAPL,MSFT --type stocks\n"
             "  myquantstore config add C:EURUSD I:NDX"
         ),
     )
@@ -565,12 +566,15 @@ def _build_parser() -> argparse.ArgumentParser:
             "Préfixes acceptés: C: (forex), I: (indices), O: (options)."
         ),
         formatter_class=_HELP_FMT,
-        epilog="Exemple: myquantstore config add AAPL TSLA --type stocks",
+        epilog=(
+            "Exemple: myquantstore config add AAPL TSLA --type stocks\n"
+            "         myquantstore config add AAPL,TSLA --type stocks"
+        ),
     )
     p_config_add.add_argument(
         "tickers",
         nargs="+",
-        help="Symboles nus ou préfixés (AAPL, C:EURUSD, I:NDX)",
+        help="Symboles nus ou préfixés (AAPL MSFT ou AAPL,MSFT ; C:EURUSD, I:NDX)",
     )
     p_config_add.add_argument(
         "--type",
@@ -769,7 +773,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="COLS",
         help=(
-            "Colonnes à conserver (CSV, ex: window_start,open,high,low,close). "
+            "Colonnes à conserver (CSV uniquement, ex: window_start,open,high,low,close). "
             "Erreur si une colonne est absente."
         ),
     )
@@ -1044,9 +1048,9 @@ def _build_parser() -> argparse.ArgumentParser:
         epilog=(
             "Exemples:\n"
             "  myquantstore tickers --status\n"
-            "  myquantstore tickers refresh --markets stocks fx --active all\n"
+            "  myquantstore tickers refresh --markets stocks,fx --active all\n"
             "  myquantstore tickers types\n"
-            "  myquantstore tickers values --column type market"
+            "  myquantstore tickers values --column type,market"
         ),
     )
     p_tickers.add_argument(
@@ -1068,10 +1072,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_tr.add_argument(
         "--markets",
-        nargs="+",
         default=None,
-        metavar="MKT",
-        help="Markets: stocks fx indices otc crypto, ou all. CSV accepté. Défaut: stocks",
+        metavar="MKT[,MKT…]",
+        help="Markets CSV: stocks,fx,indices,otc,crypto, ou all. Défaut: stocks",
     )
     p_tr.add_argument(
         "--active",
@@ -1099,22 +1102,22 @@ def _build_parser() -> argparse.ArgumentParser:
             "pour faciliter les filtres de search."
         ),
         formatter_class=_HELP_FMT,
-        epilog="Exemple: myquantstore tickers values --markets stocks --column type",
+        epilog="Exemple: myquantstore tickers values --markets stocks --column type,market",
     )
     p_tv.add_argument(
         "--markets",
-        nargs="+",
         default=None,
-        metavar="MKT",
-        help="Filtre market(s) des shards lus. Défaut: tous shards présents sur disque",
+        metavar="MKT[,MKT…]",
+        help="Filtre market(s) CSV des shards lus. Défaut: tous shards présents sur disque",
     )
     p_tv.add_argument(
         "--column",
-        nargs="+",
         default=None,
-        choices=["market", "type", "primary_exchange", "currency_name"],
-        metavar="COL",
-        help="Colonnes à lister (défaut: les 4)",
+        metavar="COL[,COL…]",
+        help=(
+            "Colonnes CSV à lister: market,type,primary_exchange,currency_name "
+            "(défaut: les 4)"
+        ),
     )
     p_tv.add_argument("--active", action="store_true", help="Uniquement tickers actifs")
     p_tv.add_argument("--inactive", action="store_true", help="Uniquement tickers inactifs")
@@ -1138,7 +1141,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "  myquantstore portfolio stats\n"
             "  myquantstore portfolio corr --from 2020-01-01 --export /tmp/corr.parquet\n"
             "  myquantstore portfolio optimize --objective min-vol\n"
-            "  myquantstore portfolio optimize --objective max-sharpe -i AAPL -i NVDA\n"
+            "  myquantstore portfolio optimize --objective max-sharpe -i AAPL,NVDA\n"
             "  myquantstore portfolio allocate --objective min-vol --value 20000\n"
             "  myquantstore portfolio frontier --timescale week"
         ),
@@ -1151,8 +1154,11 @@ def _build_parser() -> argparse.ArgumentParser:
             "--instrument",
             action="append",
             default=None,
-            metavar="SYMBOL",
-            help="Titre à inclure (répétable). Défaut: tous les stocks configurés",
+            metavar="SYMBOL[,SYMBOL…]",
+            help=(
+                "Titre(s) à inclure (répétable ; CSV par occurrence, ex: -i AAPL,NVDA). "
+                "Défaut: tous les stocks configurés"
+            ),
         )
         p.add_argument(
             "--from",
@@ -1254,6 +1260,7 @@ def _build_parser() -> argparse.ArgumentParser:
         epilog=(
             "Exemples:\n"
             "  myquantstore search apple --markets stocks --limit 20\n"
+            "  myquantstore search USD --markets fx\n"
             "  myquantstore search --ticker AAPL\n"
             "  myquantstore search --type ETF --exchange XNAS --add --yes\n"
             "  myquantstore search EUR --markets fx --output /tmp/fx.parquet"
@@ -1273,10 +1280,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_search.add_argument(
         "--markets",
-        nargs="+",
         default=None,
-        metavar="MKT",
-        help="Filtre market(s): stocks, fx, indices, otc, crypto. CSV accepté",
+        metavar="MKT[,MKT…]",
+        help="Filtre market(s) CSV: stocks,fx,indices,otc,crypto",
     )
     p_search.add_argument(
         "--type",
@@ -1824,9 +1830,9 @@ def _cmd_aggregate(settings: Settings, args: argparse.Namespace) -> int:
 
 def _parse_include_cols(raw: str | None) -> list[str] | None:
     """Parse ``--include-cols`` / query string CSV. None/vide = toutes les colonnes."""
-    if raw is None:
-        return None
-    cols = [c.strip() for c in raw.split(",") if c.strip()]
+    from myquantstore.tickers.cache import parse_csv_list
+
+    cols = parse_csv_list(raw)
     return cols or None
 
 
@@ -2400,11 +2406,14 @@ def _cmd_serve(settings: Settings, args: argparse.Namespace) -> int:
 def _resolve_portfolio_instruments(
     settings: Settings, symbols: list[str] | None
 ) -> list[Instrument]:
-    """Univers portfolio : stocks config, ou liste -i (stocks)."""
+    """Univers portfolio : stocks config, ou liste -i (stocks, CSV par occurrence)."""
+    from myquantstore.tickers.cache import parse_csv_list
+
     if not symbols:
         return settings.instruments_of_type(InstrumentType.STOCKS)
+    flat = parse_csv_list(symbols)
     out: list[Instrument] = []
-    for s in symbols:
+    for s in flat:
         if ":" in s:
             inst = _resolve_instrument_arg(settings, s, None)
         else:
@@ -2622,19 +2631,36 @@ def _cmd_options_contracts(settings: Settings, args: argparse.Namespace) -> int:
 
 
 def _resolve_markets_cli(
-    markets: list[str] | None,
+    markets: str | list[str] | None,
     *,
     default: tuple[str, ...] | None = None,
 ) -> list[str] | None:
-    """Fusionne --markets. Si default=None et rien fourni → None (tous shards)."""
-    from myquantstore.tickers.cache import DEFAULT_MARKETS, parse_markets_arg
+    """Parse ``--markets`` CSV. Si default=None et rien fourni → None (tous shards)."""
+    from myquantstore.tickers.cache import DEFAULT_MARKETS, parse_csv_list, parse_markets_arg
 
-    raw: list[str] = []
-    if markets:
-        raw.extend(markets)
-    if not raw:
+    if markets is None or (isinstance(markets, str) and not markets.strip()):
         return list(default) if default is not None else None
-    return parse_markets_arg(raw, default=default or DEFAULT_MARKETS)
+    if isinstance(markets, list) and not parse_csv_list(markets):
+        return list(default) if default is not None else None
+    return parse_markets_arg(markets, default=default or DEFAULT_MARKETS)
+
+
+def _parse_tickers_columns(raw: str | None) -> tuple[str, ...]:
+    """Parse ``tickers values --column`` CSV ; défaut = toutes les colonnes distinctes."""
+    from myquantstore.tickers.cache import parse_csv_list
+    from myquantstore.tickers.search import DISTINCT_VALUE_COLUMNS
+
+    if raw is None or not str(raw).strip():
+        return DISTINCT_VALUE_COLUMNS
+    cols = parse_csv_list(raw)
+    allowed = set(DISTINCT_VALUE_COLUMNS)
+    bad = [c for c in cols if c not in allowed]
+    if bad:
+        raise ValueError(
+            f"Colonne(s) inconnue(s): {', '.join(bad)}. "
+            f"Valeurs: {', '.join(DISTINCT_VALUE_COLUMNS)}"
+        )
+    return tuple(cols)
 
 
 def _cmd_tickers_refresh(settings: Settings, args: argparse.Namespace) -> int:
@@ -2642,8 +2668,8 @@ def _cmd_tickers_refresh(settings: Settings, args: argparse.Namespace) -> int:
     from myquantstore.api.client import MassiveClient
     from myquantstore.tickers.cache import (
         DEFAULT_MARKETS,
-        TickerTypesCache,
         TickersCache,
+        TickerTypesCache,
         parse_active_buckets,
         parse_markets_arg,
     )
@@ -2652,10 +2678,11 @@ def _cmd_tickers_refresh(settings: Settings, args: argparse.Namespace) -> int:
         console.print("[red]Erreur:[/red] Aucune clé API. Exécutez 'myquantstore setup-key'.")
         return 1
 
-    raw_markets: list[str] = []
-    if args.markets:
-        raw_markets.extend(args.markets)
-    markets = parse_markets_arg(raw_markets or None, default=DEFAULT_MARKETS)
+    try:
+        markets = parse_markets_arg(args.markets, default=DEFAULT_MARKETS)
+    except ValueError as e:
+        console.print(f"[red]Erreur:[/red] {e}")
+        return 1
     active_flags = parse_active_buckets(args.active)
 
     with MassiveClient(settings) as client:
@@ -2712,7 +2739,7 @@ def _cmd_tickers_types(settings: Settings, args: argparse.Namespace) -> int:
 
 def _cmd_tickers_values(settings: Settings, args: argparse.Namespace) -> int:
     """Commande ``myquantstore tickers values`` — distincts des colonnes de filtre."""
-    from myquantstore.tickers.search import DISTINCT_VALUE_COLUMNS, distinct_column_values
+    from myquantstore.tickers.search import distinct_column_values
 
     if args.active and args.inactive:
         console.print("[red]Erreur:[/red] --active et --inactive sont mutuellement exclusifs.")
@@ -2723,8 +2750,12 @@ def _cmd_tickers_values(settings: Settings, args: argparse.Namespace) -> int:
     elif args.inactive:
         active = False
 
-    markets = _resolve_markets_cli(args.markets, default=None)
-    columns = tuple(args.column) if args.column else DISTINCT_VALUE_COLUMNS
+    try:
+        markets = _resolve_markets_cli(args.markets, default=None)
+        columns = _parse_tickers_columns(args.column)
+    except ValueError as e:
+        console.print(f"[red]Erreur:[/red] {e}")
+        return 1
 
     try:
         ensure_markets = markets
@@ -2824,7 +2855,11 @@ def _cmd_search(settings: Settings, args: argparse.Namespace) -> int:
     elif args.inactive:
         active = False
 
-    markets = _resolve_markets_cli(args.markets, default=None)
+    try:
+        markets = _resolve_markets_cli(args.markets, default=None)
+    except ValueError as e:
+        console.print(f"[red]Erreur:[/red] {e}")
+        return 1
 
     try:
         # cascade: si markets précisés, assure ces shards ; sinon lit tout disque
@@ -2958,14 +2993,16 @@ def _cmd_config_add(settings: Settings, args: argparse.Namespace) -> int:
 
     from myquantstore.config_io import add_instruments_to_config, resolve_writable_config_path
     from myquantstore.instruments import InstrumentType
+    from myquantstore.tickers.cache import parse_csv_list
     from myquantstore.tickers.search import rows_for_config_add, search_tickers, strip_api_prefix
 
+    tickers = parse_csv_list(args.tickers)
     items: list[tuple[InstrumentType, str]] = []
 
     if args.type:
         # Type imposé : pas besoin du cache
         t = InstrumentType(args.type)
-        for raw in args.tickers:
+        for raw in tickers:
             items.append((t, strip_api_prefix(raw)))
     else:
         try:
@@ -2975,7 +3012,7 @@ def _cmd_config_add(settings: Settings, args: argparse.Namespace) -> int:
             return 1
 
         missing: list[str] = []
-        for raw in args.tickers:
+        for raw in tickers:
             symbol = strip_api_prefix(raw)
             hit = search_tickers(df_all, ticker=symbol)
             if hit.is_empty():

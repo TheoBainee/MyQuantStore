@@ -14,6 +14,7 @@ TTL commun : ``settings.instrument_cache_ttl_days`` (par shard).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -52,35 +53,65 @@ def active_to_bucket(active: bool) -> ActiveBucket:
     return "active" if active else "inactive"
 
 
-def parse_markets_arg(values: list[str] | None, *, default: tuple[str, ...] = DEFAULT_MARKETS) -> list[str]:
-    """Parse ``--markets stocks fx`` ou ``stocks,fx`` ou ``all``.
+def parse_csv_list(
+    value: str | Sequence[str] | None,
+    *,
+    lower: bool = False,
+) -> list[str]:
+    """Parse une liste CSV (virgules uniquement — pas d'espaces comme séparateur).
 
+    Accepte une string ``"a,b"``, une séquence de tokens (chacun éventuellement
+    CSV), ou ``None`` → ``[]``. Déduplique en conservant l'ordre.
+    """
+    if value is None:
+        return []
+
+    parts: list[str]
+    if isinstance(value, str):
+        parts = [value]
+    else:
+        parts = [str(v) for v in value]
+
+    seen: set[str] = set()
+    out: list[str] = []
+    for part in parts:
+        for token in part.split(","):
+            t = token.strip()
+            if lower:
+                t = t.lower()
+            if not t or t in seen:
+                continue
+            seen.add(t)
+            out.append(t)
+    return out
+
+
+def parse_markets_arg(
+    values: str | Sequence[str] | None,
+    *,
+    default: tuple[str, ...] = DEFAULT_MARKETS,
+) -> list[str]:
+    """Parse ``--markets stocks,fx`` ou ``all`` (CSV uniquement, pas d'espaces).
+
+    :raises ValueError: si un market n'est pas dans :data:`KNOWN_MARKETS` (hors ``all``).
     :return: Liste de markets dédupliquée (ordre conservé).
     """
-    if not values:
-        return list(default)
-
-    raw: list[str] = []
-    for v in values:
-        for part in str(v).replace(",", " ").split():
-            p = part.strip().lower()
-            if p:
-                raw.append(p)
-
+    raw = parse_csv_list(values, lower=True)
     if not raw:
         return list(default)
 
     if any(m == "all" for m in raw):
         return list(KNOWN_MARKETS)
 
-    # dédup en gardant l'ordre
-    seen: set[str] = set()
-    out: list[str] = []
-    for m in raw:
-        if m not in seen:
-            seen.add(m)
-            out.append(m)
-    return out
+    unknown = [m for m in raw if m not in KNOWN_MARKETS]
+    if unknown:
+        known = ", ".join(KNOWN_MARKETS)
+        bad = ", ".join(unknown)
+        raise ValueError(
+            f"Market(s) inconnu(s): {bad}. "
+            f"Valeurs acceptées: {known}, ou all (CSV: stocks,fx)."
+        )
+    return raw
 
 
 def parse_active_buckets(active_flag: str) -> list[bool]:

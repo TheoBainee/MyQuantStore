@@ -139,3 +139,72 @@ def test_config_add_with_type(tmp_path, monkeypatch, capsys):
     assert result == 0
     text = (tmp_path / "config.toml").read_text(encoding="utf-8")
     assert "NVDA" in text
+
+
+def test_search_markets_does_not_swallow_query(tmp_path, monkeypatch, capsys):
+    """--markets prend un seul token CSV ; le positionnel reste la query."""
+    _write_env_and_config(tmp_path)
+    # ticker contenant USD dans le name pour matcher la query
+    cache = tmp_path / "cache" / "tickers" / "fx" / "active.parquet"
+    df = pl.DataFrame(
+        {
+            "ticker": ["C:EURUSD", "C:GBPUSD"],
+            "name": ["Euro / US Dollar", "British Pound / US Dollar"],
+            "market": ["fx", "fx"],
+            "locale": ["global", "global"],
+            "type": ["FX", "FX"],
+            "active": [True, True],
+            "primary_exchange": [None, None],
+            "currency_name": ["usd", "usd"],
+            "currency_symbol": [None, None],
+            "base_currency_name": [None, None],
+            "base_currency_symbol": [None, None],
+            "cik": [None, None],
+            "composite_figi": [None, None],
+            "share_class_figi": [None, None],
+            "last_updated_utc": [None, None],
+            "delisted_utc": [None, None],
+        }
+    )
+    write_parquet(df, cache, last_fetched_at=datetime.now(UTC).isoformat())
+    monkeypatch.chdir(tmp_path)
+
+    # Ancien piège nargs=+ : USD aurait été un market fantôme
+    result = main(["search", "--markets", "fx", "USD", "--no-cascade"])
+    assert result == 0
+    out = capsys.readouterr().out
+    assert "EURUSD" in out or "GBPUSD" in out
+    assert "Cache tickers — ensure" not in out  # pas de cascade API
+
+
+def test_search_unknown_market_errors(tmp_path, monkeypatch, capsys):
+    _write_env_and_config(tmp_path)
+    _seed_shard(tmp_path / "cache")
+    monkeypatch.chdir(tmp_path)
+
+    result = main(["search", "--markets", "usd", "--no-cascade"])
+    assert result == 1
+    out = capsys.readouterr().out
+    assert "inconnu" in out.lower() or "Market" in out
+
+
+def test_search_markets_csv(tmp_path, monkeypatch, capsys):
+    _write_env_and_config(tmp_path)
+    _seed_shard(tmp_path / "cache", market="stocks")
+    monkeypatch.chdir(tmp_path)
+
+    result = main(["search", "--markets", "stocks,fx", "--no-cascade"])
+    assert result == 0
+    out = capsys.readouterr().out
+    assert "AAPL" in out
+
+
+def test_config_add_csv_token(tmp_path, monkeypatch, capsys):
+    _write_env_and_config(tmp_path, stocks=[])
+    monkeypatch.chdir(tmp_path)
+
+    result = main(["config", "add", "AAPL,MSFT", "--type", "stocks", "--no-cascade"])
+    assert result == 0
+    text = (tmp_path / "config.toml").read_text(encoding="utf-8")
+    assert "AAPL" in text
+    assert "MSFT" in text

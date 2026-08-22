@@ -6,14 +6,16 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 import polars as pl
+import pytest
 import respx
 
 from myquantstore.api.client import MassiveClient
 from myquantstore.storage.parquet_io import write_parquet
 from myquantstore.tickers.cache import (
-    TickerTypesCache,
     TickersCache,
+    TickerTypesCache,
     parse_active_buckets,
+    parse_csv_list,
     parse_markets_arg,
 )
 
@@ -42,11 +44,25 @@ def _sample_df(tickers: list[str], market: str = "stocks") -> pl.DataFrame:
     )
 
 
+def test_parse_csv_list():
+    assert parse_csv_list(None) == []
+    assert parse_csv_list("stocks,fx") == ["stocks", "fx"]
+    assert parse_csv_list("stocks, fx ,indices") == ["stocks", "fx", "indices"]
+    assert parse_csv_list(["AAPL", "MSFT,TSLA"]) == ["AAPL", "MSFT", "TSLA"]
+    # espaces seuls ≠ séparateur
+    assert parse_csv_list("stocks fx") == ["stocks fx"]
+    assert parse_csv_list("A,B,A", lower=True) == ["a", "b"]
+
+
 def test_parse_markets_arg():
     assert parse_markets_arg(None) == ["stocks"]
+    assert parse_markets_arg("stocks,fx") == ["stocks", "fx"]
     assert parse_markets_arg(["stocks", "fx"]) == ["stocks", "fx"]
-    assert parse_markets_arg(["stocks,fx"]) == ["stocks", "fx"]
-    assert parse_markets_arg(["all"]) == ["stocks", "fx", "indices", "otc", "crypto"]
+    assert parse_markets_arg("all") == ["stocks", "fx", "indices", "otc", "crypto"]
+    with pytest.raises(ValueError, match="inconnu"):
+        parse_markets_arg("usd")
+    with pytest.raises(ValueError, match="inconnu"):
+        parse_markets_arg("fx,usd")
 
 
 def test_parse_active_buckets():
