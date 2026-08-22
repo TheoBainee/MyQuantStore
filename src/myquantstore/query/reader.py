@@ -205,8 +205,14 @@ def query(
     if adjust_rollover:
         if instrument.type == InstrumentType.STOCKS:
             df = _apply_stock_dividend_adjustment(df, instrument, settings, resolution=res)
-        elif instrument.type == InstrumentType.FUTURES and chain is not None:
-            df = apply_rollover_adjustment(df, chain)
+        elif instrument.type == InstrumentType.FUTURES:
+            if is_extraday:
+                logger.warning(
+                    f"{instrument.key}: --adjust no-op sur track 1day futures "
+                    "(série Yahoo =F déjà continue / souvent back-adjusted)"
+                )
+            elif chain is not None:
+                df = apply_rollover_adjustment(df, chain)
 
     # --- Filtrage intraday (par heure du jour, dans timezone) — track 1min only ---
     tz = timezone or "UTC"

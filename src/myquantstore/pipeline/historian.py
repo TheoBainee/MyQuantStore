@@ -17,7 +17,6 @@ from typing import cast
 from myquantstore.api.client import MassiveClient
 from myquantstore.config import Settings
 from myquantstore.instruments import (
-    DEFAULT_RESOLUTION,
     RESOLUTION_1DAY,
     RESOLUTION_1MIN,
     Instrument,
@@ -68,15 +67,15 @@ def run_fetch(
     :param instruments: Liste des instruments. Si None → tous configurés.
     :param force: Si True, relance même si déjà fait aujourd'hui.
     :param dry_run: Si True, calcule le plan sans appeler l'API ni écrire.
-    :param resolutions: Résolutions à fetcher (défaut ``[1min]`` pour compat
-        appels internes cascade ; la CLI passe explicitement all/1min/1day).
+    :param resolutions: Résolutions à fetcher (défaut ``[1min, 1day]``, aligné
+        CLI ``--timeframe all``). Cascade passe toujours une liste explicite.
     :return: Dictionnaire des résultats par clé ``instrument[resolution]``.
     """
     if instruments is None:
         instruments = settings.all_instruments()
 
     if resolutions is None:
-        resolutions = [DEFAULT_RESOLUTION]
+        resolutions = [RESOLUTION_1MIN, RESOLUTION_1DAY]
 
     logger.info(
         f"Début historisation {len(instruments)} instrument(s) × "

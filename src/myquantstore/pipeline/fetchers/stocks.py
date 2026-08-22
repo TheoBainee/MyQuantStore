@@ -146,7 +146,7 @@ class StocksFetcher(InstrumentFetcher):
         df = df.with_columns(pl.lit(symbol).alias("product_code"))  # compat agrégateur
         df = df.with_columns(pl.lit(run_ts).alias("run_id"))
 
-        multiplier, timespan = _timeframe_parts(settings.timeframe)
+        multiplier, timespan = _timeframe_parts("1min")
         source_url = (
             f"/v2/aggs/ticker/{instrument.api_ticker}/range/{multiplier}/{timespan}/"
             f"{cover_start.isoformat()}/{cover_end.isoformat()}?adjusted=false"

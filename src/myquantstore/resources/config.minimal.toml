@@ -28,7 +28,6 @@ page_limit = 1000
 ttl_days = 30
 
 [fetch]
-timeframe = "1min"
 overlap_buffer_days = 1
 requests_per_minute = 6
 page_limit = 50000

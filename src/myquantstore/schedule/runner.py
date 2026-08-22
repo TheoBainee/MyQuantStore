@@ -38,7 +38,7 @@ def run_scheduled_job(
             return rc_agg
 
     if not skip_status:
-        rc_status = int(invoke(["status", "--check"]))
+        rc_status = int(invoke(["status", "--check", "--strict-missing"]))
         if rc_status != 0:
             return rc_status
 

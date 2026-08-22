@@ -517,6 +517,7 @@ def _render_dashboard_html(
     lookback = defaults.thumbnail_lookback_days
     cards = build_dashboard_cards(instruments, settings, lookback_days=lookback)
     portfolio_btns = []
+    rf_label = ""
     if enable_portfolio:
         portfolio_btns = [
             {
@@ -526,10 +527,21 @@ def _render_dashboard_html(
             }
             for key, obj in PORTFOLIO_PRODUCTS.items()
         ]
+        from myquantstore.analytics.risk_free import resolve_risk_free_rate
+
+        try:
+            rf_q = resolve_risk_free_rate(settings)
+            if rf_q.source == "yahoo":
+                rf_label = f"rf={rf_q.rate:.2%} ({rf_q.detail or 'yahoo'})"
+            else:
+                rf_label = f"rf={rf_q.rate:.2%} ({rf_q.source})"
+        except Exception:
+            rf_label = f"rf={settings.portfolio_risk_free_rate:.2%} (static)"
     payload = {
         "lookback_days": lookback,
         "cards": cards,
         "portfolio": portfolio_btns,
+        "rf_label": rf_label,
     }
     # JSON sûr dans <script type="application/json">
     json_str = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))

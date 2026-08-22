@@ -18,21 +18,6 @@ import re
 from myquantstore.instruments import Instrument, InstrumentType
 
 # Suffixes Massive typiques des warrants / units / rights — hors scope stocks.
-_SKIP_SUFFIXES = (
-    ".WS",
-    ".W",
-    ".U",
-    ".UN",
-    ".R",
-    ".RT",
-    ".RIGHTS",
-    ".PW",
-    ".P",  # preferred souvent différent sur Yahoo
-)
-
-# Suffixes déjà avec tiret (après éventuelle conversion)
-_SKIP_SUFFIXES_DASH = tuple(s.replace(".", "-") for s in _SKIP_SUFFIXES)
-
 _SKIP_RE = re.compile(
     r"(\.WS|\.W$|\.U$|\.UN$|\.R$|\.RT$|\.RIGHTS$|\.PW$|-WS$|-W$|-U$|-UN$|-R$|-RT$)$",
     re.IGNORECASE,

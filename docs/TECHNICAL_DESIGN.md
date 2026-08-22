@@ -37,42 +37,29 @@ Objectifs principaux :
 MyQuantStore/
 ├─ AGENTS.md
 ├─ README.md
-├─ .gitignore
-├─ .env.example
-├─ config.toml.example            # modèle → copier vers ~/.config/myquantstore/config.toml
+├─ config.toml.example            # ou: myquantstore init
 ├─ pyproject.toml
+├─ contrib/systemd|cron/          # templates schedule
 ├─ docs/
 │  ├─ TECHNICAL_DESIGN.md
-│  └─ MULTI_TYPE.md
+│  ├─ MULTI_TYPE.md
+│  ├─ PORTFOLIO.md
+│  ├─ SERVE.md
+│  └─ IMPROVEMENTS.md
 ├─ scripts/
-│  └─ test_single_contract.py
 ├─ tests/
 └─ src/myquantstore/
-   ├─ cli.py                      # setup-key, config, fetch, aggregate, query, chart, status, futures/options
-   ├─ config.py                   # XDG (~/.config/myquantstore) + fallback repo ; expanduser sur storage
-   ├─ instruments.py              # InstrumentType + Instrument
-   ├─ chains.py                   # InstrumentChain, SingleSymbolChain, OptionsChain
-   ├─ logging_setup.py
-   ├─ api/
-   │  ├─ client.py                # httpx, Bearer, throttle, retry tenacity, pagination
-   │  ├─ contracts.py             # /futures/v1/contracts
-   │  ├─ aggs_futures.py          # /futures/v1/aggs
-   │  ├─ aggs_v2.py               # /v2/aggs (stocks/forex/indices/options)
-   │  ├─ corporate_actions.py     # /stocks/v1/splits + /dividends
-   │  ├─ tickers.py / yahoo.py    # référentiel + chart Yahoo daily
-   ├─ contracts/                  # cache + RolloverChain
-   ├─ corporate_actions/          # cache splits/dividends Massive (1min)
-   ├─ yahoo_actions/              # cache splits/dividends Yahoo (1day)
-   ├─ tickers/                    # référentiel + search + yahoo_map
-   ├─ storage/                    # parquet + sidecar + coverage
-   ├─ pipeline/
-   │  ├─ cascade.py               # type-aware + résolution
-   │  ├─ historian.py
-   │  ├─ aggregator.py
-   │  └─ fetchers/                # futures, stocks, v2_single, yahoo_daily, options
-   ├─ query/                      # reader, resampler, adjust (split/div/rollover)
-   ├─ analytics/                  # MPT portfolio
-   └─ chart/                      # FastAPI + Lightweight Charts + dashboard
+   ├─ cli.py / config.py / onboarding.py / instruments.py / chains.py
+   ├─ api/          # client, contracts, aggs_futures, aggs_v2, corporate_actions, tickers, yahoo
+   ├─ contracts/ corporate_actions/ yahoo_actions/ tickers/
+   ├─ storage/      # parquet, raw_dumps, aggregate_cache, coverage
+   ├─ pipeline/     # cascade, historian, aggregator, fetchers/*
+   ├─ query/        # reader, resampler, adjust
+   ├─ analytics/    # MPT portfolio
+   ├─ chart/        # FastAPI + LWC + overlays
+   ├─ serve/        # API HTTP query() v1
+   ├─ schedule/     # systemd + cron (jobs fetch + caches)
+   └─ resources/    # templates config embarqués
 ```
 
 Config / données utilisateur (hors dépôt) :
@@ -886,12 +873,14 @@ Les 3 helpers se déclenchent uniquement si `level >= DEBUG` (via `isEnabledFor`
 | `myquantstore config` | Affiche la config résolue (clé masquée) + chemin du fichier. | `--paths` (tous les chemins) |
 | `myquantstore config add` | Ajoute des tickers à `config.toml` (lookup type via cache). | `TICKER…`, `--type`, `--no-cascade` |
 | `myquantstore futures contracts` | Liste/rafraîchit le cache contrats futures. | `--symbol ES`, `--refresh`, `--active-only` |
-| `myquantstore fetch` | Historise les OHLCV (défaut `--timeframe all` = 1min Massive + 1day Yahoo). Skip si déjà fait aujourd'hui (WARNING) sauf `--force`. Cascade listing auto. | `--instrument ES`, `--type`, `--timeframe all\|1min\|1day`, `--force`, `--dry-run`, `--no-cascade` |
+| `myquantstore fetch` | Historise les OHLCV (défaut `--timeframe all` = 1min Massive + 1day Yahoo). Futures : skip **par contrat** si dump du jour. Exit 1 si error/not_implemented. | `--instrument ES`, `--type`, `--timeframe all\|1min\|1day`, `--force`, `--dry-run`, `--no-cascade` |
 | `myquantstore aggregate` | Régénère le cache agrégé depuis dumps bruts. Auto-déclenche `fetch` si dumps manquants. | `--instrument ES`, `--type`, `--timeframe all\|1min\|1day`, `--no-cascade` |
 | `myquantstore query <instrument>` | Interroge l'historique continu. Auto-déclenche cascade type-aware si manquant. | `--start`, `--end`, `--timescale-unit min\|hour\|day\|week`, `--timescale-nb K`, `--intraday-begin/end`, `--adjust` (rollover futures / dividends stocks), `--no-split`, `--normalize-tick-size` (**incompatible avec `--adjust`**), `--check-ticksize-accuracy`, `--output`, `--limit`, `--no-cascade` |
 | `myquantstore chart [product]` | Serveur visualisation : dashboard `/` ; avec arg ouvre `/{type}:{symbol}`. Cascade 1day pour miniatures si manquant. | `--port`, `--host`, `--mdns`, `--timescale-unit`, `--timescale-nb`, `--nb-candle`, `--intraday-begin`, `--intraday-end`, `--normalize-tick-size`, `--adjust`, `--no-split`, `--no-cascade` |
 | `myquantstore serve` | API HTTP `query()` (Parquet / Arrow). Pas de cascade, pas d'auth v1. Bind `[serve]` si flags absents. | `--host`, `--port` |
-| `myquantstore status` | Snapshot par instrument (adaptatif au type) : dumps, agrégé, listing cache, RolloverChain (futures). | `--instrument ES`, `--type` |
+| `myquantstore status` | Snapshot par instrument : dumps, agrégé, lag/STALE, listing cache. | `--instrument ES`, `--type`, `--check`, `--strict-missing`, `--tickers` |
+| `myquantstore schedule` | Jobs OS : fetch (OHLCV) + caches (Massive). | `install\|run\|status\|show\|uninstall` `[fetch\|caches]` |
+| `myquantstore portfolio` | MPT stocks 1day. | `stats\|corr\|cov\|optimize\|allocate\|frontier` |
 
 ### 12.2 Comportements notables
 
@@ -1070,7 +1059,7 @@ tickers d'agrégat, le contrat courant et sa maturité (cache local). Réponse d
 (`application/vnd.apache.parquet`) ; `Accept: application/vnd.apache.arrow.stream`
 → Arrow IPC. 400 validation, 404 agrégat / instrument. 503 seulement sur `/v1/health`
 (un client peut relire des données STALE). Mapping CLI → `query()` réutilisé
-(`_timescale_to_query_params`). Détail / hors v1 : `docs/TODO_SERVE.md`.
+(`_timescale_to_query_params`). Détail / hors v1 : `docs/SERVE.md`.
 
 ---
 
@@ -1137,26 +1126,10 @@ tickers d'agrégat, le contrat courant et sa maturité (cache local). Réponse d
 
 ---
 
-## 16. Plan d'implémentation (ordre de codage)
+## 16. Plan d'implémentation — **ARCHIVÉ** (historique 2026-07)
 
-1. `.gitignore`, `.env.example`, `pyproject.toml`, `config.toml`
-2. `src/myquantstore/config.py` + `logging_setup.py`
-3. `src/myquantstore/api/client.py` (httpx, Bearer, throttle, retry tenacity, pagination)
-4. `src/myquantstore/api/contracts.py` + `api/aggregates.py`
-5. `src/myquantstore/storage/parquet_io.py` (avec sidecar `.meta.json` systématique) + `raw_dumps.py` + `aggregate_cache.py`
-6. `src/myquantstore/contracts/cache.py` (sidecar `.meta.json`)
-7. `src/myquantstore/contracts/rollover.py` (RolloverChain, RolloverSegment, to_table)
-8. `src/myquantstore/pipeline/aggregator.py` (dedup + cast Categorical + cast Int32 volume/transactions)
-9. `src/myquantstore/pipeline/historian.py` (run_ts, skip today, ranges)
-10. `src/myquantstore/pipeline/cascade.py` (ensure_*, status avant cascade)
-11. `src/myquantstore/query/reader.py` (query + normalize_tick_size + check_ticksize_accuracy + filtres temporels tz-naive + incompatibilité adjust × normalize)
-12. `src/myquantstore/cli.py` (toutes commandes + flags, status affiche RolloverChain)
-13. `scripts/test_single_contract.py`
-14. Tests complets (`tests/`) — 143 tests
-15. `README.md` (usage)
-16. `src/myquantstore/query/resampler.py` (resample_ohlcv: anchor par session, bucketing, drop partiels, gaps ; filter_intraday: normal/wrap-around)
-17. `src/myquantstore/chart/server.py` (FastAPI: dashboard `/`, /api/candles, /api/meta, /api/thumbnail, /{product})
-18. `src/myquantstore/chart/thumbnails.py` (SVG sparklines 1day + cartes dashboard)
-19. `src/myquantstore/chart/static/dashboard.html` + `chart.html` (home button, LWC)
-20. `src/myquantstore/chart/mdns.py` (zeroconf)
-21. Tests resampler + chart server
+> Ce plan a servi au bootstrap futures-only. L'état courant est multi-type ×
+> dual-source (Massive 1min + Yahoo 1day), avec serve, schedule dual-job,
+> portfolio MPT, overlays chart. Voir README + `docs/IMPROVEMENTS.md` pour la suite.
+
+---

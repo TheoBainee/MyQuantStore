@@ -254,7 +254,7 @@ class TestScheduleRunner:
         assert calls[0][:1] == ["fetch"]
         assert "--type" in calls[0] and "stocks" in calls[0]
         assert calls[1][:1] == ["aggregate"]
-        assert calls[2] == ["status", "--check"]
+        assert calls[2] == ["status", "--check", "--strict-missing"]
 
     def test_run_stops_on_fetch_failure(self):
         def fake_main(argv: list[str] | None = None) -> int:
@@ -274,7 +274,7 @@ class TestScheduleRunner:
             return 0
 
         run_scheduled_job(skip_aggregate=True, main_fn=fake_main)
-        assert calls == ["fetch", "status"]
+        assert calls == ["fetch", "status"]  # argv[0] only
 
     def test_run_caches_tickers_then_contracts(self):
         calls: list[list[str]] = []

@@ -2,14 +2,14 @@
 
 Logique d'historisation spécifique aux futures :
 
-1. Vérifier "déjà fait aujourd'hui" (skip si un run daté d'aujourd'hui existe).
-2. Récupérer le cache contrats (:class:`ContractsCache`).
-3. Construire la :class:`RolloverChain` à partir des contrats.
-4. Pour chaque contrat actif sur la période cible :
+1. Récupérer le cache contrats (:class:`ContractsCache`).
+2. Construire la :class:`RolloverChain` à partir des contrats.
+3. Pour chaque contrat actif sur la période cible :
+   - Skip **par ticker** si un dump du jour existe déjà (sauf ``--force``).
    - Déterminer le range (premier run vs incrémental vs extension arrière).
    - Fetch via ``/futures/v1/aggs/{ticker}``.
-   - Sauvegarder le dump pseudo-brut (1 fichier par contrat et par run, données normalisées).
-5. Agréger les dumps pseudo-bruts en cache agrégé.
+   - Sauvegarder le dump pseudo-brut (1 fichier par contrat et par run).
+4. Agréger les dumps pseudo-bruts en cache agrégé.
 """
 
 from __future__ import annotations
@@ -18,11 +18,11 @@ from datetime import UTC, date, datetime, timedelta
 
 import polars as pl
 
-from myquantstore.api.aggs_futures import fetch_aggs_futures
+from myquantstore.api.aggs_futures import MASSIVE_BAR_RESOLUTION, fetch_aggs_futures
 from myquantstore.api.client import MassiveClient
 from myquantstore.config import Settings, generate_run_ts
 from myquantstore.contracts.cache import ContractsCache
-from myquantstore.contracts.rollover import RolloverChain
+from myquantstore.contracts.rollover import RolloverChain, RolloverSegment
 from myquantstore.instruments import RESOLUTION_1MIN, Instrument
 from myquantstore.logging_setup import get_logger
 from myquantstore.pipeline.aggregator import aggregate
@@ -56,20 +56,7 @@ class FuturesFetcher(InstrumentFetcher):
 
         resolution = RESOLUTION_1MIN
 
-        # 1. Vérifier "déjà fait aujourd'hui"
-        if not force and not dry_run:
-            already_done, existing_run_ts = has_run_today(instrument, settings)
-            if already_done:
-                logger.warning(
-                    f"Historisation déjà effectuée aujourd'hui pour {product_code} "
-                    f"(run_ts={existing_run_ts}) — skip. Utilisez --force pour relancer."
-                )
-                result["status"] = "skipped"
-                result["existing_run_ts"] = existing_run_ts
-                attach_coverage_fields(result, instrument, settings, resolution)
-                return result
-
-        # 2. Récupérer le cache contrats
+        # 1. Récupérer le cache contrats
         cache = ContractsCache(product_code, settings)
         contracts_df = cache.get(client)
         if contracts_df.is_empty():
@@ -79,7 +66,7 @@ class FuturesFetcher(InstrumentFetcher):
             attach_coverage_fields(result, instrument, settings, resolution)
             return result
 
-        # 3. Construire la RolloverChain
+        # 2. Construire la RolloverChain
         chain = RolloverChain(product_code, contracts_df, settings.days_before_expiry)
         if len(chain) == 0:
             logger.error(f"Chaîne de rollover vide pour {product_code} — skip")
@@ -90,11 +77,10 @@ class FuturesFetcher(InstrumentFetcher):
 
         result["contracts"] = len(chain)
 
-        # 4. Déterminer le range global à couvrir
+        # 3. Déterminer le range global à couvrir
         today = datetime.now(UTC).date()
         target_start = today - timedelta(days=settings.history_months_for(instrument.type) * 30)
 
-        # Déterminer la date la plus ancienne/récente déjà historisée
         has_existing = raw_dumps_exist(instrument, settings)
         oldest_date, latest_date = (
             get_aggregate_date_range(instrument, settings, resolution)
@@ -102,7 +88,7 @@ class FuturesFetcher(InstrumentFetcher):
             else (None, None)
         )
 
-        # 5. Segments à fetcher
+        # 4. Segments à fetcher
         segments = chain.continuous_segments(target_start, today)
         if not segments:
             logger.warning(
@@ -131,11 +117,25 @@ class FuturesFetcher(InstrumentFetcher):
             attach_coverage_fields(result, instrument, settings, resolution, today=today)
             return result
 
-        # 6. Fetcher chaque segment
+        # 5. Fetcher chaque segment (skip par ticker si dump du jour)
         run_ts = generate_run_ts()
         total_candles = 0
+        fetched_segments = 0
+        skipped_segments = 0
 
         for seg in segments:
+            if not force:
+                done_today, existing_run_ts = has_run_today(
+                    instrument, settings, resolution=resolution, ticker=seg.ticker
+                )
+                if done_today:
+                    logger.info(
+                        f"  Skip {seg.ticker}: dump du jour déjà présent "
+                        f"(run_ts={existing_run_ts})"
+                    )
+                    skipped_segments += 1
+                    continue
+
             seg_start, seg_end = _determine_segment_range(
                 seg, target_start, today, oldest_date, latest_date, settings
             )
@@ -158,13 +158,12 @@ class FuturesFetcher(InstrumentFetcher):
                 logger.warning(f"  Aucun chandelier pour {seg.ticker} sur [{seg_start}, {seg_end}]")
                 continue
 
-            # Stamp colonnes identité (product_code pour compat, symbol + instrument_type)
             df = df.with_columns(pl.lit(product_code).alias("product_code"))
             df = df.with_columns(pl.lit(product_code).alias("symbol"))
             df = df.with_columns(pl.lit(instrument.type.value).alias("instrument_type"))
             df = df.with_columns(pl.lit(run_ts).alias("run_id"))
 
-            source_url = f"/futures/v1/aggs/{seg.ticker}?resolution={settings.timeframe}"
+            source_url = f"/futures/v1/aggs/{seg.ticker}?resolution={MASSIVE_BAR_RESOLUTION}"
             from myquantstore.storage.raw_dumps import save_raw_dump
 
             save_raw_dump(
@@ -178,13 +177,22 @@ class FuturesFetcher(InstrumentFetcher):
             )
 
             total_candles += df.height
+            fetched_segments += 1
             logger.info(f"  {seg.ticker}: {df.height} chandeliers récupérés")
 
         result["candles"] = total_candles
         result["run_ts"] = run_ts
+        result["fetched_segments"] = fetched_segments
+        result["skipped_segments"] = skipped_segments
 
-        # 7. Agréger
-        if total_candles > 0 or has_existing:
+        if fetched_segments == 0 and skipped_segments > 0 and total_candles == 0:
+            result["status"] = "skipped"
+            result["error"] = "all_segments_done_today"
+            logger.warning(
+                f"{product_code}: tous les segments déjà dumpés aujourd'hui — skip. "
+                "Utilisez --force pour relancer."
+            )
+        elif total_candles > 0 or has_existing:
             logger.info(f"Agrégation de {product_code}...")
             aggregate(instrument, settings)
 
@@ -194,7 +202,7 @@ class FuturesFetcher(InstrumentFetcher):
 
 
 def _determine_segment_range(
-    seg: object,
+    seg: RolloverSegment,
     target_start: date,
     today: date,
     oldest_date: date | None,
@@ -210,8 +218,8 @@ def _determine_segment_range(
 
     :return: Tuple (window_start_gte, window_start_lte) au format YYYY-MM-DD, ou (None, None).
     """
-    seg_active_start = seg.active_from  # type: ignore[attr-defined]
-    seg_active_end = seg.active_until  # type: ignore[attr-defined]
+    seg_active_start = seg.active_from
+    seg_active_end = seg.active_until
 
     if oldest_date is None:
         cover_start = target_start

@@ -312,13 +312,14 @@
                 if (t === "stocks" && (data.portfolio || []).length) {
                     const bar = document.createElement("div");
                     bar.className = "portfolio-bar";
-                    bar.innerHTML = `<span class="label">Portefeuille optimisé (lazy)</span>`;
+                    const rf = data.rf_label ? ` · ${data.rf_label}` : "";
+                    bar.innerHTML = `<span class="label">Portefeuille optimisé (lazy)${rf}</span>`;
                     for (const p of data.portfolio) {
                         const a = document.createElement("a");
                         a.className = "port-btn" + (p.objective === "min-vol" ? " minvol" : "");
                         a.href = "/" + p.key;
                         a.textContent = p.label;
-                        a.title = p.key + " — calcul à l'ouverture";
+                        a.title = p.key + " — calcul à l'ouverture" + (data.rf_label ? " · " + data.rf_label : "");
                         bar.appendChild(a);
                     }
                     section.appendChild(bar);

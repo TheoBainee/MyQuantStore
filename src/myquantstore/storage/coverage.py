@@ -70,6 +70,23 @@ class InstrumentHealth:
     def has_problems(self) -> bool:
         return self.worst_level != HealthLevel.OK
 
+    def has_check_failures(self, *, strict_missing: bool = False) -> bool:
+        """Problèmes pour ``status --check``.
+
+        Par défaut : STALE seulement (instrument neuf / agrégé absent = OK).
+        ``strict_missing=True`` : aussi missing_aggregate et cross_resolution_lag
+        (cron ``schedule run``).
+        """
+        for issue in self.issues:
+            if issue.level == HealthLevel.STALE:
+                return True
+            if strict_missing and issue.code in {
+                "missing_aggregate",
+                "cross_resolution_lag",
+            }:
+                return True
+        return False
+
 
 def _to_date(value: object) -> date | None:
     if isinstance(value, datetime):

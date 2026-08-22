@@ -342,7 +342,7 @@ curl 'http://127.0.0.1:8741/v1/instruments'
 - Booléens HTTP : `true`/`false` (ex: `normalize_tick_size=true`). Un flag nu ne marche pas.
 - Aucune cascade / fetch réseau (agrégat absent → 404). Pas d'auth en v1 (bind localhost).
 - Aide curls : `myquantstore serve -h`.
-- Détail : [docs/TODO_SERVE.md](docs/TODO_SERVE.md), [docs/TECHNICAL_DESIGN.md](docs/TECHNICAL_DESIGN.md) §12ter.
+- Détail : [docs/SERVE.md](docs/SERVE.md), [docs/TECHNICAL_DESIGN.md](docs/TECHNICAL_DESIGN.md) §12ter.
 
 ## Structure du projet
 
@@ -355,8 +355,8 @@ MyQuantStore/
 │  ├─ TECHNICAL_DESIGN.md       # Documentation technique
 │  ├─ MULTI_TYPE.md             # Architecture multi-type
 │  ├─ PORTFOLIO.md              # MPT / portfolio CLI + chart lazy
-│  ├─ IMPROVEMENTS.md           # Propositions d'amélioration
-│  └─ TODO_SERVE.md             # Spec `myquantstore serve` (API query)
+│  ├─ IMPROVEMENTS.md           # Backlog / propositions
+│  └─ SERVE.md                  # Spec `myquantstore serve` (API query)
 ├─ src/myquantstore/
 │  ├─ cli.py                    # CLI argparse (multi-type + portfolio)
 │  ├─ config.py                 # pydantic-settings + tomllib (XDG)

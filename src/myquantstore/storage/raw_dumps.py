@@ -223,20 +223,22 @@ def has_run_today(
     instrument: Instrument,
     settings: Settings,
     resolution: str = DEFAULT_RESOLUTION,
+    *,
+    ticker: str | None = None,
 ) -> tuple[bool, str | None]:
-    """Vérifie si une historisation a déjà été faite aujourd'hui pour un instrument × résolution.
+    """Vérifie si une historisation a déjà été faite aujourd'hui.
 
-    On inspecte les ``run_ts`` (YYYYMMDDTHHMMSS) de tous les dumps : si la
-    partie date (8 premiers caractères) correspond à aujourd'hui, un run a
-    déjà été effectué.
+    Si ``ticker`` est fourni, ne regarde que ce ticker (skip par segment futures).
+    Sinon, vrai dès qu'**un** ticker du produit a un dump daté d'aujourd'hui
+    (comportement mono-symbole stocks/forex/indices/yahoo).
 
     :return: Tuple (déjà_fait_aujourd'hui, run_ts_trouvé).
     """
     today_str = datetime.now(UTC).strftime("%Y%m%d")
-    tickers = list_tickers(instrument, settings)
+    tickers = [ticker] if ticker is not None else list_tickers(instrument, settings)
 
-    for ticker in tickers:
-        for run_ts in list_runs(instrument, ticker, settings, resolution=resolution):
+    for t in tickers:
+        for run_ts in list_runs(instrument, t, settings, resolution=resolution):
             if run_ts.startswith(today_str):
                 return True, run_ts
 

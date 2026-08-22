@@ -21,7 +21,8 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
   - ~/.config/myquantstore/config.toml (instruments par type, fetch, storage, futures/stocks, logging, chart...)
 - Paramètres clés configurables :
   - Instruments par type (futures = ["NQ", "ES", ...], stocks, forex, indices)
-  - `[fetch] timeframe = "1min"` = taille de barre Massive (distinct de CLI `--timeframe all|1min|1day`)
+  - Barre Massive hardcodée **1min** (clé TOML `[fetch] timeframe` dépréciée/ignorée).
+    CLI `--timeframe all|1min|1day` = track de stockage uniquement.
   - overlap_buffer_days
   - history_months par type (défaut 24, 60 pour indices)
   - days_before_expiry (futures rollover)
@@ -84,7 +85,7 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
   `--end YYYY-MM-DD` = fin de journée inclusive (pas minuit). `--check-ticksize-accuracy` exit 1 si ERREUR.
 - CLI complète + chart serveur (dashboard `/` multi-type, miniatures SVG 1day, charts `/{type}:{symbol}`). Couleurs conf : `[chart] candle_up/down` ; overlay `[chart.overlay] overlay_dir` + `[chart.overlay.backtest]` (tx/order buy/sell hex). Rétrocompat `[chart] overlay_dir`. API `/api/overlays`, `/api/overlay/{stem}`.
 - Chart timezone : `[chart] timezone` (IANA, défaut UTC) — affichage axe/tooltip + `intraday_begin/end` en heures murales de cette TZ.
-- **`myquantstore serve`** : API HTTP `query()` (`/v1/health`, `/v1/instruments`, `/v1/query`) — Parquet / Arrow, pas de cascade, pas d'auth v1. Spec : `docs/TODO_SERVE.md`.
+- **`myquantstore serve`** : API HTTP `query()` (`/v1/health`, `/v1/instruments`, `/v1/query`) — Parquet / Arrow, pas de cascade, pas d'auth v1. Spec : `docs/SERVE.md`.
 - **Portfolio MPT** (`analytics/`, CLI `portfolio`) : panel stocks 1day total-return, corr/cov, optim long-only equal|min-vol|max-sharpe, allocate (lots), frontier (Polars + numpy). Chart lazy `portfolio:max-sharpe`/`min-vol` (combo base puis resample, rebase 100).
 
 ### Onboarding & schedule (UX install)
@@ -129,7 +130,7 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
 ### Documentation
 - https://massive.com/docs/llms.txt
 - README.md, docs/TECHNICAL_DESIGN.md, docs/MULTI_TYPE.md, docs/PORTFOLIO.md, docs/IMPROVEMENTS.md
-- **`myquantstore serve` est implémenté** (API query réseau, pas le chart) : `docs/TODO_SERVE.md` (hors v1 encore ouvert). Backtest hebdo = snapshot Parquet, pas cette API.
+- **`myquantstore serve` est implémenté** (API query réseau, pas le chart) : `docs/SERVE.md` (hors v1 encore ouvert). Backtest hebdo = snapshot Parquet, pas cette API.
 - **`--adjust` est implémenté** (futures back-adjusted rollover + stocks dividends après splits). Ne pas le documenter comme stub/NotImplemented.
 - Maintenir AGENTS.md à jour (ce fichier est la source de vérité pour les consignes de dev).
 

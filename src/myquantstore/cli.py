@@ -799,11 +799,25 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Écrit le résultat en Parquet (sinon tableau stdout tronqué)",
     )
     p_query.add_argument(
+        "--display-rows",
         "--limit",
         type=int,
         default=None,
+        dest="display_rows",
         metavar="N",
-        help="Max lignes affichées stdout (override display_max_rows; n'altère pas --output)",
+        help=(
+            "Max lignes affichées stdout (override display_max_rows; n'altère pas --output). "
+            "--limit est un alias déprécié."
+        ),
+    )
+    p_query.add_argument(
+        "--timezone",
+        default=None,
+        metavar="IANA",
+        help=(
+            "Fuseau pour --intraday-begin/end (défaut: [chart] timezone). "
+            "Ex: America/New_York, Europe/Paris, UTC"
+        ),
     )
     p_query.add_argument(
         "--include-cols",
@@ -1018,7 +1032,15 @@ def _build_parser() -> argparse.ArgumentParser:
     p_status.add_argument(
         "--check",
         action="store_true",
-        help="Exit 1 si au moins un agrégé STALE ou un écart 1min/1day (idéal cron)",
+        help="Exit 1 si au moins un agrégé STALE (fraîcheur)",
+    )
+    p_status.add_argument(
+        "--strict-missing",
+        action="store_true",
+        help=(
+            "Avec --check: exit 1 aussi si agrégé absent ou écart 1min/1day "
+            "(cron / schedule run)"
+        ),
     )
 
     # --- futures (groupe) ---
@@ -1716,7 +1738,10 @@ def _cmd_config(settings: Settings, args: argparse.Namespace) -> int:
     table.add_row("instruments.indices", ", ".join(settings.indices) or "[dim](vide)[/dim]")
     table.add_row("instruments.options", ", ".join(settings.options) or "[dim](vide)[/dim]")
     # Fetch
-    table.add_row("timeframe", settings.timeframe)
+    table.add_row(
+        "timeframe (deprecated)",
+        f"{settings.timeframe} — barre Massive hardcodée 1min",
+    )
     table.add_row("overlap_buffer_days", str(settings.overlap_buffer_days))
     hm = ", ".join(f"{k}={v}" for k, v in settings.history_months.items())
     table.add_row("history_months", hm)
@@ -1800,8 +1825,10 @@ def _cmd_fetch(settings: Settings, args: argparse.Namespace) -> int:
 
     console.print("\n[bold]== Résumé ==[/bold]")
     stale_count = 0
+    counts: dict[str, int] = {}
     for key, result in results.items():
-        status = result.get("status", "unknown")
+        status = str(result.get("status", "unknown"))
+        counts[status] = counts.get(status, 0) + 1
         candles = result.get("candles", 0)
         cov_suffix = _format_coverage_suffix(result)
         if result.get("stale"):
@@ -1821,6 +1848,9 @@ def _cmd_fetch(settings: Settings, args: argparse.Namespace) -> int:
             console.print(f"  {key}: [yellow]NON IMPLÉMENTÉ[/yellow] ({result.get('error', '')})")
         else:
             console.print(f"  {key}: [red]{status}[/red]{cov_suffix}")
+
+    parts = [f"{n} {s}" for s, n in sorted(counts.items())]
+    console.print(f"\n[dim]Totaux: {', '.join(parts)} ({len(results)} job(s))[/dim]")
 
     if stale_count:
         console.print(
@@ -2052,6 +2082,7 @@ def _cmd_query(settings: Settings, args: argparse.Namespace) -> int:
             no_split=args.no_split,
             dedup_timestamps=not args.no_dedup_timestamps,
             include_cols=_parse_include_cols(getattr(args, "include_cols", None)),
+            timezone=getattr(args, "timezone", None) or settings.chart_timezone or "UTC",
         )
     except ValueError as e:
         console.print(f"[red]Erreur:[/red] {e}")
@@ -2063,13 +2094,24 @@ def _cmd_query(settings: Settings, args: argparse.Namespace) -> int:
         console.print(f"[yellow]Non implémenté:[/yellow] {e}")
         return 1
 
+    if args.adjust and instrument.type == InstrumentType.FUTURES and resolution == RESOLUTION_1DAY:
+        console.print(
+            "[yellow]Note:[/yellow] --adjust no-op sur futures 1day "
+            "(série Yahoo =F déjà continue)."
+        )
+
     if args.output:
         df.write_parquet(args.output)
         console.print(f"[green]Écrit:[/green] {args.output} ({df.height} lignes)")
     else:
         sort_col = "window_start" if "window_start" in df.columns else "session_end_date"
-        # --limit : plafond d'affichage uniquement (comme display_max_rows)
-        _render_df(df, settings, sort_col=sort_col, max_rows=args.limit)
+        # --display-rows / --limit : plafond d'affichage uniquement
+        _render_df(
+            df,
+            settings,
+            sort_col=sort_col,
+            max_rows=getattr(args, "display_rows", None),
+        )
 
     return 0
 
@@ -2136,7 +2178,9 @@ def _cmd_status(settings: Settings, args: argparse.Namespace) -> int:
             console.print(f"  Cache listing : [dim]n/a ({inst.type.value})[/dim]")
 
         health = assess_instrument_health(inst, settings, today=today)
-        if health.has_problems:
+        if getattr(args, "check", False) and health.has_check_failures(
+            strict_missing=bool(getattr(args, "strict_missing", False))
+        ):
             any_problem = True
 
         tickers = list_tickers(inst, settings)
@@ -2193,7 +2237,10 @@ def _cmd_status(settings: Settings, args: argparse.Namespace) -> int:
                     console.print(f"  Yahoo actions {kind} : [red]absent[/red]")
 
     if getattr(args, "check", False) and any_problem:
-        console.print("\n[bold red]status --check : problèmes de fraîcheur détectés[/bold red]")
+        mode = "strict" if getattr(args, "strict_missing", False) else "STALE only"
+        console.print(
+            f"\n[bold red]status --check ({mode}) : problèmes de fraîcheur détectés[/bold red]"
+        )
         return 1
 
     return 0

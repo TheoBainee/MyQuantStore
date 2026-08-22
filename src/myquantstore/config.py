@@ -145,6 +145,8 @@ class Settings(BaseSettings):
     options: list[str] = []
 
     # --- Fetch (config.toml: [fetch]) — générique, commun aux aggs de tous les types ---
+    # DEPRECATED : barre Massive hardcodée 1min. Conservé pour ne pas casser les
+    # conf TOML existantes (warning si ≠ 1min). CLI --timeframe = track stockage.
     timeframe: str = "1min"
     overlap_buffer_days: int = 1
     # Historique ciblé (mois) par type d'instrument. Défaut: 24 partout sauf indices=60.
@@ -502,15 +504,6 @@ class Settings(BaseSettings):
             raise ValueError(
                 "chart intraday_begin et intraday_end doivent être différents."
             )
-        return self
-
-    @model_validator(mode="after")
-    def _check_api_key(self) -> Settings:
-        """Avertit si la clé API est absente — elle est obligatoire pour les appels API."""
-        if not self.api_key:
-            # On ne lève pas d'erreur ici car certaines commandes (config, setup-key)
-            # n'ont pas besoin de clé. L'erreur sera levée au moment de l'appel API.
-            pass
         return self
 
     # --- Helpers de chemins ---
@@ -967,7 +960,19 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
     )
 
     # Reconstruire avec validation complète (re-run des field_validators)
-    return Settings(**data)
+    settings = Settings(**data)
+
+    # [fetch] timeframe déprécié : barre Massive toujours 1min
+    raw_tf = str(fetch.get("timeframe", "1min")).strip().lower()
+    if raw_tf and raw_tf not in ("1min", "1m", "min"):
+        import logging
+
+        logging.getLogger("myquantstore.config").warning(
+            f"[fetch] timeframe={raw_tf!r} est ignoré — barre Massive hardcodée "
+            f"'1min'. Utilisez CLI --timeframe all|1min|1day pour le track stockage."
+        )
+
+    return settings
 
 
 def generate_run_ts() -> str:

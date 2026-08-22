@@ -1,7 +1,7 @@
-# TODO — `myquantstore serve` (API query réseau)
+# `myquantstore serve` (API query réseau)
 
-Statut : **fait (v1)**. Reprise d'une discussion (2026-08) : interfaçage backtest
-weekend NQ/ES + consommation depuis un autre langage / une autre machine.
+Statut : **fait (v1)**. Hors v1 : §4 (backlog). Reprise d'une discussion (2026-08) :
+interfaçage backtest weekend NQ/ES + consommation depuis un autre langage / machine.
 
 Implémenté : `src/myquantstore/serve/`, CLI `myquantstore serve`, tests
 `tests/test_serve.py`. Chart et `schedule` inchangés. Hors v1 : voir §4.
@@ -23,10 +23,11 @@ Le backtest hebdo **n'attend pas** cette API. Il utilise un snapshot Parquet
   les deux. Après `--adjust` et le bilan tick size, avant normalize/resample.
 - Le chart s'appuie sur ce défaut (plus de `unique` dans `_prepare_chart_df`).
 - Package : `__init__.py` n'exporte que `__version__`. Pas de SDK public.
-- `schedule run` / `schedule run fetch` = fetch → aggregate → `status --check`.
+- `schedule run` / `schedule run fetch` = fetch → aggregate →
+  `status --check --strict-missing`.
   `schedule run caches` = tickers + contrats (indépendant). Pas de daemon.
-  `schedule install` **écrase** `~/.config/systemd/user/myquantstore-fetch.service`
-  (le job caches a ses propres units `myquantstore-caches.*`).
+  `schedule install` **écrase** les units du job ciblé
+  (`myquantstore-fetch.*` / `myquantstore-caches.*`).
 
 ### Snapshot backtest (hors myquantstore — déjà la recette)
 
@@ -138,25 +139,3 @@ utile plus tard : `tail` des N plus récentes, documenté comme tel — ou rien 
 - Multiplier / specs contrats (reste côté moteur de backtest).
 - Écriture atomique des agrégats (autre amélioration, utile si lecture
   concurrente pendant `aggregate` ; le snapshot tourne *après* schedule).
-
----
-
-## 5. Fichiers probables à l'implémentation
-
-- `src/myquantstore/serve/` (app FastAPI séparée de `chart/server.py`)
-- Branche CLI dans `cli.py` (`serve`)
-- Tests respx-free : `TestClient` + agrégat seedé (comme `test_chart_server.py`)
-- Doc : ce fichier → section README + `TECHNICAL_DESIGN` quand c'est fait
-- **Ne pas** documenter `--adjust` comme stub (déjà implémenté)
-
----
-
-## 6. Critères de done
-
-1. `myquantstore serve` démarre ; `GET /v1/query?instrument=ES` renvoie un
-   Parquet relisible par `pl.read_parquet` / pyarrow / un client non-Python.
-2. `dedup_timestamps=true` par défaut ; `false` renvoie 2 lignes au même
-   `window_start` si l'agrégat a le recouvrement de roll.
-3. Aucun appel réseau Massive/Yahoo depuis `serve`.
-4. Chart et `schedule` inchangés.
-5. Tests : health 200/503, query 200/400/404, Parquet round-trip NQ/ES 1min.

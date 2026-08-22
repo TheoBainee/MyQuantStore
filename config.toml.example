@@ -47,9 +47,6 @@ page_limit = 1000
 ttl_days = 30
 
 [fetch]
-# Timeframe des chandeliers. Pour futures -> paramètre resolution (ex: "1min").
-# Pour forex/stocks/indices/options -> dérivé en (multiplier, timespan) pour l'endpoint v2.
-timeframe = "1min"
 # Buffer de recouvrement entre runs (en jours).
 # À chaque run incrémental, on re-fetch depuis (dernière_date - buffer) pour garantir la continuité.
 overlap_buffer_days = 1

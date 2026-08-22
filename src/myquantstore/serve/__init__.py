@@ -7,5 +7,5 @@ quelconque — autre langage, autre machine, notebook — **sans** partager
 Ce n'est **pas** le serveur chart (``/api/candles``) et **pas** un
 remplacement du snapshot hebdo. Aucune cascade / fetch réseau.
 
-Voir :mod:`myquantstore.serve.server` et ``docs/TODO_SERVE.md``.
+Voir :mod:`myquantstore.serve.server` et ``docs/SERVE.md``.
 """

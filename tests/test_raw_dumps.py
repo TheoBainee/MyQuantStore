@@ -133,6 +133,19 @@ class TestHasRunToday:
         assert done is False
         assert run_ts is None
 
+    def test_has_run_today_per_ticker(self, tmp_settings, es_instrument, sample_df):
+        """Skip par segment : dump ESM5 aujourd'hui n'implique pas ESU5."""
+        today_ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
+        save_raw_dump(sample_df, es_instrument, "ESM5", today_ts, tmp_settings)
+
+        done_esm, _ = has_run_today(es_instrument, tmp_settings, ticker="ESM5")
+        done_esu, _ = has_run_today(es_instrument, tmp_settings, ticker="ESU5")
+        done_any, _ = has_run_today(es_instrument, tmp_settings)
+
+        assert done_esm is True
+        assert done_esu is False
+        assert done_any is True
+
 
 class TestGetLatestRunDate:
     """Tests de get_latest_run_date."""

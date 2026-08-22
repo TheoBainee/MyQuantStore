@@ -72,6 +72,15 @@ def test_coverage_stale(tmp_settings, aapl_instrument):
     health = assess_instrument_health(aapl_instrument, tmp_settings, today=today)
     assert health.worst_level == HealthLevel.STALE
     assert any(i.code == "stale" for i in health.issues)
+    assert health.has_check_failures(strict_missing=False) is True
+
+
+def test_check_failures_missing_vs_strict(tmp_settings, aapl_instrument):
+    """Instrument neuf : missing = pas de fail check sauf --strict-missing."""
+    health = assess_instrument_health(aapl_instrument, tmp_settings, today=date(2026, 8, 1))
+    assert health.has_problems is True  # WARN missing
+    assert health.has_check_failures(strict_missing=False) is False
+    assert health.has_check_failures(strict_missing=True) is True
 
 
 def test_cross_resolution_lag(tmp_settings, aapl_instrument):

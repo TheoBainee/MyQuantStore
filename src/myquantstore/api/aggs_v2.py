@@ -63,7 +63,8 @@ def fetch_aggs_v2(
             "utilisez myquantstore.api.aggs_futures.fetch_aggs_futures."
         )
 
-    multiplier, timespan = parse_timeframe(settings.timeframe)
+    # Barre de base Massive hardcodée (track stockage 1min).
+    multiplier, timespan = parse_timeframe("1min")
     api_ticker = instrument.api_ticker
 
     # Pour stocks, on demande les prix NON ajustés (adjusted=false) car MyQuantStore

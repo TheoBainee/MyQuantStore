@@ -24,6 +24,10 @@ from myquantstore.logging_setup import get_logger
 
 logger = get_logger("aggs.futures")
 
+# Barre de base Massive hardcodée (stockage track ``1min``). Distinct du CLI
+# ``--timeframe all|1min|1day`` qui sélectionne le track de stockage.
+MASSIVE_BAR_RESOLUTION = "1min"
+
 
 def _aggs_path(ticker: str) -> str:
     """Construit le path de l'endpoint /aggs futures pour un ticker de contrat."""
@@ -40,11 +44,11 @@ def fetch_aggs_futures(
     """Récupère tous les chandeliers OHLCV d'un contrat futures.
 
     La pagination (``next_url``) est gérée automatiquement par le client.
-    On utilise ``resolution={timeframe}`` et ``page_limit`` (max API = 50000).
+    Resolution barre = ``MASSIVE_BAR_RESOLUTION`` (1min) ; ``page_limit`` depuis settings.
 
     :param client: Client Massive authentifié.
     :param ticker: Ticker du contrat futures (ex: "ESM5").
-    :param settings: Configuration (pour timeframe, page_limit).
+    :param settings: Configuration (page_limit, retries…).
     :param window_start_gte: Date/time de début (YYYY-MM-DD ou ns timestamp).
     :param window_start_lte: Date/time de fin (YYYY-MM-DD ou ns timestamp).
     :return: DataFrame Polars avec les chandeliers, triés par ``window_start``
@@ -52,14 +56,14 @@ def fetch_aggs_futures(
         transactions, dollar_volume, settlement_price, session_end_date, ticker.
     """
     logger.info(
-        f"Fetch /futures/v1/aggs/{ticker}?resolution={settings.timeframe}"
+        f"Fetch /futures/v1/aggs/{ticker}?resolution={MASSIVE_BAR_RESOLUTION}"
         + (f"&gte={window_start_gte}" if window_start_gte else "")
         + (f"&lte={window_start_lte}" if window_start_lte else "")
     )
 
     results = client.get_paginated(
         _aggs_path(ticker),
-        resolution=settings.timeframe,
+        resolution=MASSIVE_BAR_RESOLUTION,
         **{"window_start.gte": window_start_gte} if window_start_gte else {},
         **{"window_start.lte": window_start_lte} if window_start_lte else {},
         limit=settings.page_limit,

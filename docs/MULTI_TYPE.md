@@ -23,7 +23,7 @@ REST et un schéma de réponse distincts. MyQuantStore les modélise via un syst
 - **Forex / stocks / indices / options** partagent l'endpoint v2
   (`/v2/aggs/ticker/{ticker}/range/{multiplier}/{timespan}/{from}/{to}`) avec
   timestamps en **millisecondes** et **champs courts** (`o, h, l, c, v, n, t, vw`).
-  Le `timeframe` générique `"1min"` est mappé en `(multiplier=1, timespan="minute")`.
+  Barre Massive hardcodée `"1min"` → `(multiplier=1, timespan="minute")`.
 - **Préfixe de ticker** : `forex` → `C:`, `indices` → `I:`, `options` → `O:`.
   Ajouté automatiquement par `Instrument.api_ticker` (le symbole nu est utilisé en
   config/CLI/storage).
@@ -266,9 +266,10 @@ log_dir = "~/.local/share/myquantstore/logs"
   lever l'ambiguïté. Si omis, opère sur **tous** les instruments configurés.
 - `myquantstore futures contracts [--symbol ES]` — cache contrats futures.
 - `myquantstore options contracts` — scaffold (`NotImplementedError`).
-- `query`/`chart` : `--no-split` (stocks, bruts), `--adjust` (Panama futures /
-  dividends stocks après splits), `--normalize-tick-size` /
-  `--check-ticksize-accuracy` (futures, requièrent la chaîne).
+- `query`/`chart` : `--no-split` (stocks, bruts), `--adjust` (Panama futures 1min /
+  dividends stocks ; no-op warn sur futures 1day Yahoo `=F`),
+  `--normalize-tick-size` / `--check-ticksize-accuracy` (futures, requièrent la chaîne).
+  `--display-rows` (alias `--limit`) = plafond d'affichage CLI uniquement.
 
 ## 10. Statut d'implémentation
 
