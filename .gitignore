@@ -10,6 +10,9 @@ config.toml
 config.toml.bak
 *.bak
 
+# scripts
+import_personal_main_csv.py
+
 # Notes de travail locales
 notesprompts.txt
 

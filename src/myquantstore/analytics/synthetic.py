@@ -44,6 +44,7 @@ def _load_leg_ohlcv(
     start: datetime | None,
     end: datetime | None,
     adjust_dividends: bool,
+    no_split: bool = False,
 ) -> pl.DataFrame:
     inst = Instrument(type=InstrumentType.STOCKS, symbol=symbol)
     if not aggregate_exists(inst, settings, resolution=resolution):
@@ -57,7 +58,7 @@ def _load_leg_ohlcv(
         resolution=resolution,
         k_minutes=1,
         k_days=1,
-        no_split=False,
+        no_split=no_split,
         adjust_rollover=adjust_dividends,
         limit=None,
     )
@@ -84,6 +85,7 @@ def build_portfolio_ohlcv(
     k_days: int = 1,
     week_aligned: bool = False,
     adjust_dividends: bool = True,
+    no_split: bool = False,
     rebase: float = 100.0,
 ) -> pl.DataFrame:
     """Construit OHLCV panier : combo sur ``resolution`` puis resample.
@@ -111,6 +113,7 @@ def build_portfolio_ohlcv(
                 start=start,
                 end=end,
                 adjust_dividends=adjust_dividends,
+                no_split=no_split,
             )
         except Exception as exc:
             errors.append(f"{sym}: {exc}")

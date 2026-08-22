@@ -134,7 +134,8 @@ def create_chart_app(
                 k_minutes=k_minutes if base_res == "1min" else 1,
                 k_days=k_days if base_res == "1day" else 1,
                 week_aligned=(timescale_unit == "week"),
-                adjust_dividends=not defaults.no_split,
+                adjust_dividends=defaults.adjust_rollover,
+                no_split=defaults.no_split,
                 rebase=100.0,
             )
         except Exception as exc:

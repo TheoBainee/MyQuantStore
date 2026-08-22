@@ -1,7 +1,7 @@
 [project]
 name = "myquantstore"
 version = "0.1.0"
-description = "Historisation périodique des données OHLCV multi-instruments (futures, stocks, forex, indices, options) via l'API Massive.com"
+description = "Historisation périodique des données OHLCV multi-instruments (futures, stocks, forex, indices, options) via Massive.com (1min) et Yahoo Finance (1day)"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }

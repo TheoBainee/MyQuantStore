@@ -351,10 +351,10 @@ class ContractsCache:
         meta = read_meta(self.parquet_path)
         if not meta: return False
         age = now - meta["last_fetched_at"]
-        return age < timedelta(days=settings.contracts_ttl_days)
+        return age < timedelta(days=settings.instrument_cache_ttl_days)
 ```
 
-TTL par défaut : 30 jours (`contracts_ttl_days = 30`).
+TTL par défaut : 30 jours (`instrument_cache_ttl_days = 30`).
 
 ---
 
@@ -886,10 +886,10 @@ Les 3 helpers se déclenchent uniquement si `level >= DEBUG` (via `isEnabledFor`
 | `myquantstore config` | Affiche la config résolue (clé masquée) + chemin du fichier. | `--paths` (tous les chemins) |
 | `myquantstore config add` | Ajoute des tickers à `config.toml` (lookup type via cache). | `TICKER…`, `--type`, `--no-cascade` |
 | `myquantstore futures contracts` | Liste/rafraîchit le cache contrats futures. | `--symbol ES`, `--refresh`, `--active-only` |
-| `myquantstore fetch` | Historise les OHLCV 1min (multi-type). Skip si déjà fait aujourd'hui (WARNING) sauf `--force`. Cascade listing auto. | `--instrument ES`, `--type`, `--force`, `--dry-run`, `--no-cascade` |
-| `myquantstore aggregate` | Régénère le cache agrégé depuis dumps bruts. Auto-déclenche `fetch` si dumps manquants. | `--instrument ES`, `--type`, `--no-cascade` |
+| `myquantstore fetch` | Historise les OHLCV (défaut `--timeframe all` = 1min Massive + 1day Yahoo). Skip si déjà fait aujourd'hui (WARNING) sauf `--force`. Cascade listing auto. | `--instrument ES`, `--type`, `--timeframe all\|1min\|1day`, `--force`, `--dry-run`, `--no-cascade` |
+| `myquantstore aggregate` | Régénère le cache agrégé depuis dumps bruts. Auto-déclenche `fetch` si dumps manquants. | `--instrument ES`, `--type`, `--timeframe all\|1min\|1day`, `--no-cascade` |
 | `myquantstore query <instrument>` | Interroge l'historique continu. Auto-déclenche cascade type-aware si manquant. | `--start`, `--end`, `--timescale-unit min\|hour\|day\|week`, `--timescale-nb K`, `--intraday-begin/end`, `--adjust` (rollover futures / dividends stocks), `--no-split`, `--normalize-tick-size` (**incompatible avec `--adjust`**), `--check-ticksize-accuracy`, `--output`, `--limit`, `--no-cascade` |
-| `myquantstore chart [product]` | Serveur visualisation : dashboard `/` ; avec arg ouvre `/{type}:{symbol}`. Cascade 1day pour miniatures si manquant. | `--port`, `--host`, `--mdns`, `--timescale-unit`, `--timescale-nb`, `--nb-candle`, `--intraday-begin`, `--intraday-end`, `--normalize-tick-size`, `--adjust`, `--no-cascade` |
+| `myquantstore chart [product]` | Serveur visualisation : dashboard `/` ; avec arg ouvre `/{type}:{symbol}`. Cascade 1day pour miniatures si manquant. | `--port`, `--host`, `--mdns`, `--timescale-unit`, `--timescale-nb`, `--nb-candle`, `--intraday-begin`, `--intraday-end`, `--normalize-tick-size`, `--adjust`, `--no-split`, `--no-cascade` |
 | `myquantstore serve` | API HTTP `query()` (Parquet / Arrow). Pas de cascade, pas d'auth v1. Bind `[serve]` si flags absents. | `--host`, `--port` |
 | `myquantstore status` | Snapshot par instrument (adaptatif au type) : dumps, agrégé, listing cache, RolloverChain (futures). | `--instrument ES`, `--type` |
 
@@ -1010,7 +1010,7 @@ Le frontend chart n'a besoin que de : `time`, OHLC, `volume`, `candle_count`. La
 
 **Chargement initial** : `limit = max_visible_candles × buffer_multiplier` candles (les plus récentes via `df.tail(limit)`). Le serveur passe `limit=None` à `query()` (qui fait `head`) et applique `tail()` après coup pour obtenir les plus récentes.
 
-**Lazy loading horizontal** : quand l'utilisateur pan vers la gauche, le frontend fetch des chunks plus anciens via `before` param. Le trigger se déclenche uniquement quand `barsBefore < 100` (moins de 100 candles restent avant le bord gauche de la vue). Un flag `noMoreData` coupe les requêtes quand le serveur retourne 0 bytes ou 0 candles (historique épuisé ou buckets partiels droppés), évitant les boucles infinies.
+**Lazy loading horizontal** : quand l'utilisateur pan vers la gauche, le frontend fetch des chunks plus anciens via `before` param. Le trigger se déclenche uniquement quand `barsBefore < 250` (moins de 250 candles restent avant le bord gauche de la vue). Un flag `noMoreData` coupe les requêtes quand le serveur retourne 0 bytes ou 0 candles (historique épuisé ou buckets partiels droppés), évitant les boucles infinies.
 
 **Zoom cap** : `subscribeVisibleLogicalRangeChange` bloque le dézoom au-delà de `max_visible_candles` candles visibles (butée, pas résolution cap).
 

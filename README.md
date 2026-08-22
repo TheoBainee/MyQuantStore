@@ -1,6 +1,6 @@
 # MyQuantStore
 
-Historisation périodique des données OHLCV multi-instruments via l'API REST de [Massive.com](https://massive.com).
+Historisation périodique des données OHLCV multi-instruments via [Massive.com](https://massive.com) (1min) et Yahoo Finance (1day).
 
 MyQuantStore supporte les **5 types d'instruments** de Massive : **futures**, **stocks**, **forex**, **indices** et **options**. À ce jour, **futures**, **stocks**, **forex** et **indices** sont pleinement implémentés ; **options** est scaffoldé (`NotImplementedError`).
 
@@ -21,11 +21,11 @@ Deux familles de timeframes / sources, **sans se croiser** pour reconstruire un 
 ## Fonctionnalités
 
 - **Multi-type** : futures (rollover + contrats), stocks (splits/dividends), forex, indices, options — dispatch automatique par type d'instrument.
-- Récupération et historisation **chaque semaine** des chandeliers OHLCV 1 minute.
+- Récupération et historisation **chaque semaine** des chandeliers OHLCV **1min** (Massive) et **1day** (Yahoo).
 - Stockage en **fichiers Parquet** via **Polars** (types `Categorical` optimisés), layout multi-type × multi-résolution : `data/{raw,aggregate}/{type}/{symbol}/…/{resolution}/…` (`1min` Massive, `1day` Yahoo multi-type).
 - **Dumps pseudo-bruts** : les réponses API sont normalisées au format interne canonique (timestamps, champs, colonnes d'identité) avant écriture dans `data/raw/` — suffisants pour reconstruire intégralement les agrégats (pas de dump JSON brut).
 - **Ajustement split** pour stocks : stockage en prix **bruts** (`adjusted=false`) + ajustement à la query (toggle `--no-split`, splits ON par défaut via le cache `/stocks/v1/splits`).
-- Mise en cache intelligente : contrats futures (`/futures/v1/contracts`) et corporate actions stocks (`/stocks/v1/splits`), TTL commun configurable.
+- Mise en cache intelligente : contrats futures (`/futures/v1/contracts`), corporate actions Massive (`/stocks/v1/splits` + `/dividends`) et `yahoo_actions/` (1day stocks), TTL commun configurable.
 - Gestion automatique du **rollover** des contrats futures (switch J-7 avant expiration) via la `RolloverChain`.
 - **Cascade automatique** des dépendances (type-aware) : `query` déclenche `aggregate` → `fetch` → `contracts`/`splits` si nécessaire.
 - Normalisation des prix en **multiples entiers de tick size** (`Int32`) via `--normalize-tick-size` (futures).
@@ -53,7 +53,8 @@ myquantstore init
 myquantstore doctor
 myquantstore fetch --dry-run
 myquantstore fetch
-myquantstore schedule install     # samedi 01h00 — systemd user ou cron (auto)
+myquantstore schedule install            # fetch sam. 07h — systemd user ou cron
+myquantstore schedule install caches     # caches Massive sam. 03h
 myquantstore status
 ```
 
@@ -133,28 +134,38 @@ Voir `docs/TECHNICAL_DESIGN.md` et `docs/MULTI_TYPE.md` pour le détail des para
 
 ## Automatisation (schedule)
 
-Le job périodique exécute dans l'ordre :
+Deux jobs indépendants (`schedule <verbe> [fetch|caches]`, sans job = **fetch**) :
+
+**fetch** (samedi 07:00) — historisation OHLCV :
 
 1. **`fetch`** — dumps + mise à jour agrégat côté historian
 2. **`aggregate`** — régénère le cache Parquet `data/aggregate/` (pour brancher des traitements externes directement sur l'agrégat). Futures 1min : clé `(window_start, ticker)` — au roll, deux contrats peuvent partager le même timestamp. `query` déduplique par défaut (`--no-dedup-timestamps` pour garder les deux ; voir `docs/TECHNICAL_DESIGN.md` §8.6).
 3. **`status --check`** — exit 1 si données STALE / problème de fraîcheur (idéal monitoring)
 
+**caches** (samedi 03:00) — refresh listing Massive :
+
+1. **`tickers refresh --markets all --force`**
+2. **`futures contracts --refresh`**
+
 ```bash
-myquantstore schedule install                    # auto: systemd user si dispo, sinon cron
-myquantstore schedule install --backend systemd  # samedi 01:00 (OnCalendar)
-myquantstore schedule install --backend cron --when '0 1 * * 6'
+myquantstore schedule install                    # fetch, auto: systemd user si dispo, sinon cron
+myquantstore schedule install caches             # caches Massive (sam. 03:00)
+myquantstore schedule install --backend systemd  # fetch samedi 07:00 (OnCalendar)
+myquantstore schedule install --backend cron --when '0 7 * * 6'
 myquantstore schedule install --fetch-args '--no-cascade'
-myquantstore schedule status
-myquantstore schedule run                        # exécution manuelle du job
-myquantstore schedule show                       # preview units / crontab
-myquantstore schedule uninstall
+myquantstore schedule status                     # les deux jobs
+myquantstore schedule run                        # exécution manuelle fetch
+myquantstore schedule run caches                 # exécution manuelle caches
+myquantstore schedule show caches                # preview units / crontab
+myquantstore schedule uninstall caches
+myquantstore schedule uninstall                  # les deux jobs
 ```
 
-- **systemd user** : units dans `~/.config/systemd/user/myquantstore-fetch.{service,timer}`.
+- **systemd user** : `~/.config/systemd/user/myquantstore-fetch.{service,timer}` et `myquantstore-caches.{service,timer}`.
   Si la machine est souvent hors session graphique : `loginctl enable-linger $USER`.
   `Persistent=true` rattrape un run manqué (machine éteinte).
-- **cron** : bloc marqué `# BEGIN MYQUANTSTORE` … `# END MYQUANTSTORE` ; logs dans
-  `~/.local/share/myquantstore/logs/schedule.log`.
+- **cron** : blocs `# BEGIN MYQUANTSTORE` (fetch) et `# BEGIN MYQUANTSTORE-CACHES` ;
+  logs `schedule.log` / `schedule-caches.log` sous `~/.local/share/myquantstore/logs/`.
 - Templates manuels : `contrib/systemd/`, `contrib/cron/`.
 - Monitoring seul : `myquantstore status --check` (exit 1 si STALE).
 
@@ -215,12 +226,12 @@ myquantstore config add TSLA NVDA                         # lookup type via cach
 | `myquantstore init [--minimal\|--full] [-k KEY]` | Bootstrap XDG (config + dirs + clé optionnelle) |
 | `myquantstore doctor [--ping]` | Diagnostic install / config / chemins (exit 1 si bloquant) |
 | `myquantstore setup-key [-k KEY] [-y]` | Configure la clé API dans `~/.config/myquantstore/.env` |
-| `myquantstore schedule {install\|run\|status\|show\|uninstall}` | Job périodique fetch→aggregate→status (systemd/cron) |
+| `myquantstore schedule {install\|run\|status\|show\|uninstall} [fetch\|caches]` | Jobs périodiques : fetch (OHLCV sam. 07h) et caches (Massive sam. 03h) |
 | `myquantstore config` | Affiche la configuration résolue (clé masquée) + chemin du fichier |
 | `myquantstore status [--instrument ES] [--type futures] [--check]` | État par instrument ; `--check` exit 1 si STALE |
-| `myquantstore fetch [--instrument ES] [--type futures] [--force] [--dry-run] [--no-cascade]` | Historise les chandeliers OHLCV (multi-type, cascade auto) |
-| `myquantstore aggregate [--instrument ES] [--type futures] [--no-cascade]` | Régénère le cache agrégé (générique) |
-| `myquantstore query <instrument> [--type] [--start] [--end] [--timescale-unit min\|hour] [--timescale-nb K] [--intraday-begin HH:MM] [--intraday-end HH:MM] [--adjust] [--no-split] [--normalize-tick-size] [--check-ticksize-accuracy] [--output] [--limit] [--no-cascade]` | Interroge l'historique continu |
+| `myquantstore fetch [--instrument ES] [--type futures] [--timeframe all\|1min\|1day] [--force] [--dry-run] [--no-cascade]` | Historise les chandeliers OHLCV (défaut `--timeframe all` = 1min+1day) |
+| `myquantstore aggregate [--instrument ES] [--type futures] [--timeframe all\|1min\|1day] [--no-cascade]` | Régénère le cache agrégé (générique) |
+| `myquantstore query <instrument> [--type] [--start] [--end] [--timescale-unit min\|hour\|day\|week] [--timescale-nb K] [--intraday-begin HH:MM] [--intraday-end HH:MM] [--adjust] [--no-split] [--no-dedup-timestamps] [--normalize-tick-size] [--check-ticksize-accuracy] [--output] [--limit] [--include-cols] [--no-cascade]` | Interroge l'historique continu |
 | `myquantstore chart [instrument] [--type] [--port] [--host] [--mdns] [--timescale-unit] [--timescale-nb] [--nb-candle] [--intraday-begin] [--intraday-end] [--normalize-tick-size] [--no-split] [--adjust] [--no-cascade]` | Serveur de visualisation interactive |
 | `myquantstore serve [--host] [--port]` | API HTTP `query()` (Parquet / Arrow, localhost, pas de cascade) |
 | `myquantstore portfolio {stats\|corr\|cov\|optimize\|allocate\|frontier} [-i …] [--value] [--objective equal\|min-vol\|max-sharpe] [--export]` | MPT stocks 1day + lots ; chart `portfolio:*` (voir [docs/PORTFOLIO.md](docs/PORTFOLIO.md)) |
@@ -228,6 +239,7 @@ myquantstore config add TSLA NVDA                         # lookup type via cach
 | `myquantstore options contracts` | Scaffold options (`NotImplementedError`) |
 | `myquantstore tickers refresh [--markets stocks fx] [--active true\|false\|all] [--force]` | Fetch/cache shards `tickers/{market}/{active\|inactive}.parquet` + types |
 | `myquantstore tickers types [--force]` | Liste/rafraîchit le cache des ticker types |
+| `myquantstore tickers values [--markets] [--column] [--active\|--inactive]` | Valeurs distinctes du cache tickers |
 | `myquantstore search [QUERY] [--markets] [--limit N] [--add] [--yes]` | Recherche locale ; `--limit` override `display_max_rows` ; `--add` → conf |
 | `myquantstore config add TICKER… [--type stocks]` | Ajoute des tickers à la conf (lookup type via cache) |
 
@@ -239,7 +251,7 @@ Les commandes `fetch`, `aggregate` et `query` vérifient leurs prérequis et les
 
 ```
 futures : contracts (/futures/v1/contracts) → fetch → aggregate → query
-stocks  : splits (/stocks/v1/splits)        → fetch → aggregate → query
+stocks  : splits + dividends                → fetch → aggregate → query
 forex/indices :                              fetch → aggregate → query
 options : NotImplemented
 ```
@@ -250,7 +262,7 @@ Utiliser `--no-cascade` pour désactiver l'auto-cascade (erreur explicite si pr�
 
 La commande `query` supporte le **rééchantillonnage à la volée** des candles 1min en candles k-min, ainsi que le **filtrage par heure du jour** (intraday). Ces transformations sont faites à la lecture (aucun stockage) — l'agrégé reste en 1min.
 
-**`--timescale-unit min|hour` + `--timescale-nb K`** : rééchantillonne les candles 1min en buckets de K unités (ex: `--timescale-unit min --timescale-nb 7` pour 7min, `--timescale-unit hour --timescale-nb 2` pour 2h). La grille est **ancrée au début de chaque session** pour garantir la cohérence entre jours : le bucket N démarre à `anchor + N * K`, identique pour chaque session. Les buckets partiels de fin de session sont supprimés. Une colonne `candle_count` indique le nombre de candles 1min agrégés dans chaque bucket (utile pour détecter les gaps intra-session).
+**`--timescale-unit min|hour|day|week` + `--timescale-nb K`** : rééchantillonne les candles de base (1min Massive ou 1day Yahoo) en buckets de K unités (ex: `--timescale-unit min --timescale-nb 7` pour 7min, `--timescale-unit hour --timescale-nb 2` pour 2h, `--timescale-unit day --timescale-nb 2` pour 2j). Intraday : grille **ancrée au début de chaque session**. Les buckets partiels de fin de session sont supprimés. Une colonne `candle_count` indique le nombre de barres de base agrégées dans chaque bucket.
 
 **`--intraday-begin HH:MM` / `--intraday-end HH:MM`** : filtre les candles par heure du jour. Deux modes :
 - **Normal** (`begin < end`, ex: `09:30`-`16:00`) : garde les candles dans `[begin, end]`.
@@ -301,11 +313,13 @@ myquantstore chart --mdns --host 0.0.0.0
 
 **License TradingView** : Lightweight Charts est sous Apache-2.0 avec attribution requise. Le logo TradingView est affiché sur le chart (`attributionLogo: true`), ce qui satisfait l'obligation de licence.
 
+**Overlays** : `[chart.overlay] overlay_dir` + API `/api/overlays`, `/api/overlay/{stem}` (backtest / indicateurs). Timezone d'affichage : `[chart] timezone`. Couleurs : `[chart] candle_up/down`. Échelle lin/log dans la toolbar.
+
 **Améliorations futures** (documentées, non implémentées) :
 - ~~Dual-source extraday Yahoo étendu (forex/indices/futures daily)~~ done
 - ~~Page d'accueil dashboard à `/`~~ done
+- ~~Import d'overlays backtest / indicateurs~~ done
 - Récupérer les chandeliers 1 seconde (plan payant)
-- Import d'éléments externes : backtest / indicateurs / objets custom
 - Backend alternatif FinPlot (desktop only)
 - Streaming temps réel (websockets, plans payants)
 
@@ -341,6 +355,7 @@ MyQuantStore/
 │  ├─ TECHNICAL_DESIGN.md       # Documentation technique
 │  ├─ MULTI_TYPE.md             # Architecture multi-type
 │  ├─ PORTFOLIO.md              # MPT / portfolio CLI + chart lazy
+│  ├─ IMPROVEMENTS.md           # Propositions d'amélioration
 │  └─ TODO_SERVE.md             # Spec `myquantstore serve` (API query)
 ├─ src/myquantstore/
 │  ├─ cli.py                    # CLI argparse (multi-type + portfolio)
@@ -408,19 +423,7 @@ Après quoi `myquantstore fe<Tab>` complète automatiquement en `myquantstore fe
 - `docs/TECHNICAL_DESIGN.md` — documentation technique complète (architecture, configuration, API, rollover, cascade, etc.).
 - `docs/MULTI_TYPE.md` — architecture multi-type (5 types d'instruments, endpoints par type, sémantique `--adjust`/`--no-split`, layout de stockage, statut d'implémentation).
 - `docs/PORTFOLIO.md` — analyse MPT (`portfolio stats|corr|optimize|allocate|frontier`) et chart lazy `portfolio:*`.
-
-## Confidentialité et sécurité
-
-> **Rappel MassiVe Terms of Service** : le code source de ce projet est libre (MIT), mais les Market Data récupérées via l'API Massive.com sont soumises aux [Market Data Terms](https://massive.com/legal/market-data-terms-of-service) et ne peuvent être redistribuées. Ce dépôt ne sert qu'à partager l'outil de collecte, pas les données elles-mêmes.
-
-## Licence
-
-Le code de MyQuantStore est sous licence **MIT** (voir [LICENSE](./LICENSE)).
-
-La librairie [TradingView Lightweight Charts](https://www.tradingview.com/lightweight-charts/) utilisée par la commande `myquantstore chart` est sous licence **Apache 2.0** (voir [src/myquantstore/chart/NOTICE](./src/myquantstore/chart/NOTICE) et [LICENSE-2.0.txt](./src/myquantstore/chart/LICENSE-2.0.txt)).
-lète (architecture, configuration, API, rollover, cascade, etc.).
-- `docs/MULTI_TYPE.md` — architecture multi-type (5 types d'instruments, endpoints par type, sémantique `--adjust`/`--no-split`, layout de stockage, statut d'implémentation).
-- `docs/PORTFOLIO.md` — analyse MPT (`portfolio stats|corr|optimize|allocate|frontier`) et chart lazy `portfolio:*`.
+- `docs/IMPROVEMENTS.md` — propositions d'amélioration (hors correctifs déjà appliqués).
 
 ## Confidentialité et sécurité
 

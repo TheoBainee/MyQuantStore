@@ -97,9 +97,9 @@ class V2SingleSymbolFetcher(InstrumentFetcher):
             )
         cover_end = today
 
-        if cover_start >= cover_end:
+        if cover_start > cover_end:
             logger.warning(
-                f"Rien à fetcher pour {instrument.key} (cover_start >= cover_end)"
+                f"Rien à fetcher pour {instrument.key} (cover_start > cover_end)"
             )
             result["status"] = "no_range"
             attach_coverage_fields(result, instrument, settings, resolution, today=today)

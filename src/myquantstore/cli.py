@@ -6,7 +6,7 @@ Commandes disponibles :
 - ``myquantstore init`` : bootstrap XDG (config + dirs + clé optionnelle).
 - ``myquantstore doctor`` : diagnostic install / config / chemins.
 - ``myquantstore setup-key`` : clé API Massive dans ``~/.config/myquantstore/.env``.
-- ``myquantstore schedule`` : job périodique (systemd user timer et/ou cron).
+- ``myquantstore schedule`` : jobs périodiques fetch (OHLCV) et caches (Massive).
 - ``myquantstore config`` : affiche la config résolue (clé masquée) + chemin du fichier.
 - ``myquantstore config add`` : ajoute des tickers à ``config.toml`` (lookup type via cache).
 - ``myquantstore status`` : snapshot par instrument (adaptatif au type).
@@ -31,7 +31,6 @@ Utilise ``argparse`` (stdlib). Autocompletion shell via ``argcomplete`` (optionn
 from __future__ import annotations
 
 import argparse
-import getpass
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -296,7 +295,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "Données    : ~/.local/share/myquantstore/{data,cache,logs}\n"
             "\n"
             "Flux typique : init → doctor → fetch → status → query|chart\n"
-            "Automatisation : schedule install (samedi 01h00 ; fetch→aggregate→status --check)"
+            "Automatisation : schedule install fetch (sam. 07h) / caches (sam. 03h)"
         ),
         epilog=(
             "Aide détaillée d'une commande :\n"
@@ -305,7 +304,8 @@ def _build_parser() -> argparse.ArgumentParser:
             "Premiers pas :\n"
             "  myquantstore init && myquantstore doctor\n"
             "  myquantstore fetch --dry-run && myquantstore fetch\n"
-            "  myquantstore schedule install\n"
+            "  myquantstore schedule install          # fetch sam. 07h\n"
+            "  myquantstore schedule install caches   # Massive sam. 03h\n"
             "\n"
             "Exemples courants :\n"
             "  myquantstore fetch -i AAPL --timeframe 1min --force\n"
@@ -439,27 +439,43 @@ def _build_parser() -> argparse.ArgumentParser:
     # --- schedule ---
     p_sched = _sub(
         "schedule",
-        help="Timer OS : fetch → aggregate → status (systemd/cron, sam. 01h)",
+        help="Timers OS : fetch (OHLCV, sam. 07h) et caches (Massive, sam. 03h)",
         description=(
-            "Installe un job OS qui exécute fetch → aggregate → status --check.\n"
-            "Backends: systemd user timer (recommandé) ou crontab utilisateur.\n"
-            "Défaut: samedi 01:00 heure locale."
+            "Deux jobs indépendants (systemd user timer ou cron) :\n"
+            "\n"
+            "  fetch   Historisation OHLCV — fetch → aggregate → status --check\n"
+            "          Défaut: samedi 07:00  (units: myquantstore-fetch.*)\n"
+            "\n"
+            "  caches  Refresh caches Massive — tickers refresh --markets all --force\n"
+            "          + futures contracts --refresh\n"
+            "          Défaut: samedi 03:00  (units: myquantstore-caches.*)\n"
+            "\n"
+            "Sans job : fetch (compat). status affiche les deux."
         ),
         epilog=(
             "Exemples:\n"
             "  myquantstore schedule install\n"
-            "  myquantstore schedule install --backend cron --when '0 1 * * 6'\n"
-            "  myquantstore schedule install --when 'Sat *-*-* 01:00:00'\n"
-            "  myquantstore schedule run\n"
+            "  myquantstore schedule install caches\n"
+            "  myquantstore schedule install --backend cron --when '0 7 * * 6'\n"
+            "  myquantstore schedule install --when 'Sat *-*-* 07:00:00'\n"
+            "  myquantstore schedule run caches\n"
             "  myquantstore schedule status\n"
+            "  myquantstore schedule uninstall caches\n"
             "  myquantstore schedule uninstall"
         ),
     )
     sched_sub = p_sched.add_subparsers(dest="schedule_command", help="Sous-commande schedule")
     p_sched_install = sched_sub.add_parser(
         "install",
-        help="Installe le timer/cron",
+        help="Installe le timer/cron d'un job (défaut: fetch)",
         formatter_class=_HELP_FMT,
+    )
+    p_sched_install.add_argument(
+        "job",
+        nargs="?",
+        choices=["fetch", "caches"],
+        default="fetch",
+        help="Job : fetch (OHLCV) ou caches (Massive). Défaut: fetch.",
     )
     p_sched_install.add_argument(
         "--backend",
@@ -472,15 +488,15 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="SPEC",
         help=(
-            "Horaires: OnCalendar systemd (ex: 'Sat *-*-* 01:00:00') "
-            "ou expression cron (ex: '0 1 * * 6'). Défaut selon backend."
+            "Horaires: OnCalendar systemd (ex: 'Sat *-*-* 07:00:00') "
+            "ou expression cron (ex: '0 7 * * 6'). Défaut selon job + backend."
         ),
     )
     p_sched_install.add_argument(
         "--fetch-args",
         default="",
         metavar="ARGS",
-        help='Args passés à fetch via schedule run (ex: "--no-cascade")',
+        help='Args passés à fetch via schedule run (job fetch ; ex: "--no-cascade")',
     )
     p_sched_install.add_argument(
         "--dry-run",
@@ -489,30 +505,44 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_sched_run = sched_sub.add_parser(
         "run",
-        help="Exécute le job (fetch + aggregate + status --check)",
+        help="Exécute un job (fetch ou caches)",
         formatter_class=_HELP_FMT,
+    )
+    p_sched_run.add_argument(
+        "job",
+        nargs="?",
+        choices=["fetch", "caches"],
+        default="fetch",
+        help="Job : fetch (OHLCV) ou caches (Massive). Défaut: fetch.",
     )
     p_sched_run.add_argument(
         "--fetch-args",
         default="",
         metavar="ARGS",
-        help='Args additionnels pour fetch (ex: "--type stocks")',
+        help='Args additionnels pour fetch (job fetch ; ex: "--type stocks")',
     )
     p_sched_run.add_argument(
         "--skip-aggregate",
         action="store_true",
-        help="Ne pas reconstruire l'agrégat après fetch",
+        help="Ne pas reconstruire l'agrégat après fetch (job fetch)",
     )
     p_sched_run.add_argument(
         "--skip-status",
         action="store_true",
-        help="Ne pas exécuter status --check en fin de job",
+        help="Ne pas exécuter status --check en fin de job (job fetch)",
     )
-    sched_sub.add_parser("status", help="État du schedule installé", formatter_class=_HELP_FMT)
+    sched_sub.add_parser("status", help="État des jobs fetch et caches", formatter_class=_HELP_FMT)
     p_sched_show = sched_sub.add_parser(
         "show",
         help="Affiche units/ligne cron sans installer",
         formatter_class=_HELP_FMT,
+    )
+    p_sched_show.add_argument(
+        "job",
+        nargs="?",
+        choices=["fetch", "caches"],
+        default="fetch",
+        help="Job : fetch (OHLCV) ou caches (Massive). Défaut: fetch.",
     )
     p_sched_show.add_argument(
         "--backend",
@@ -527,10 +557,17 @@ def _build_parser() -> argparse.ArgumentParser:
         formatter_class=_HELP_FMT,
     )
     p_sched_un.add_argument(
+        "job",
+        nargs="?",
+        choices=["fetch", "caches", "all"],
+        default="all",
+        help="Job à retirer (défaut: all = fetch + caches)",
+    )
+    p_sched_un.add_argument(
         "--backend",
         choices=["auto", "systemd", "cron", "all"],
         default="all",
-        help="Quoi retirer (défaut: all)",
+        help="Backend à retirer (défaut: all)",
     )
 
     # --- config ---
@@ -1134,7 +1171,7 @@ def _build_parser() -> argparse.ArgumentParser:
         description=(
             "Modern Portfolio Theory sur l'univers stocks (track 1day Yahoo).\n"
             "Returns total-return (split + dividend adjust). Optim long-only\n"
-            "numpy (equal | min-vol | max-sharpe) + frontière approximée."
+            "numpy (equal | min-vol | max-sharpe) + frontière QP (SLSQP)."
         ),
         epilog=(
             "Exemples:\n"
@@ -1341,6 +1378,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _cmd_setup_key(args: argparse.Namespace) -> int:
     """Commande ``setup-key`` : écrit la clé API dans ``~/.config/myquantstore/.env``."""
+    import getpass
+
     from myquantstore.onboarding import write_api_key
 
     env_path = get_user_env_path()
@@ -1439,7 +1478,8 @@ def _cmd_init(args: argparse.Namespace) -> int:
     console.print("  myquantstore doctor")
     console.print("  myquantstore fetch --dry-run")
     console.print("  myquantstore fetch")
-    console.print("  myquantstore schedule install   # samedi 01h00")
+    console.print("  myquantstore schedule install          # fetch sam. 07h")
+    console.print("  myquantstore schedule install caches   # Massive sam. 03h")
     return 0
 
 
@@ -1467,16 +1507,19 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
 def _cmd_schedule(settings: Settings | None, args: argparse.Namespace) -> int:
     """Commande ``schedule`` : install / run / status / show / uninstall."""
     from myquantstore.schedule import (
-        DEFAULT_CRON,
-        DEFAULT_ON_CALENDAR,
+        JOB_CACHES,
+        JOB_FETCH,
+        JOB_IDS,
         cron_status,
         detect_backend,
+        get_job,
         install_cron,
         install_systemd,
         render_cron_block,
         render_service_unit,
         render_timer_unit,
         resolve_binary,
+        run_cache_refresh_job,
         run_scheduled_job,
         systemd_status,
         uninstall_cron,
@@ -1490,14 +1533,27 @@ def _cmd_schedule(settings: Settings | None, args: argparse.Namespace) -> int:
         return 1
 
     if sub == "run":
-        console.print("[bold]== schedule run ==[/bold]")
-        console.print("  1) fetch → 2) aggregate → 3) status --check")
-        rc = run_scheduled_job(
-            fetch_args=getattr(args, "fetch_args", "") or "",
-            skip_aggregate=bool(getattr(args, "skip_aggregate", False)),
-            skip_status=bool(getattr(args, "skip_status", False)),
-            main_fn=main,
-        )
+        job = getattr(args, "job", JOB_FETCH) or JOB_FETCH
+        fetch_args = getattr(args, "fetch_args", "") or ""
+        skip_aggregate = bool(getattr(args, "skip_aggregate", False))
+        skip_status = bool(getattr(args, "skip_status", False))
+        if job == JOB_CACHES:
+            if fetch_args or skip_aggregate or skip_status:
+                console.print("[yellow]--fetch-args / --skip-* ignorés pour le job caches[/yellow]")
+            console.print("[bold]== schedule run caches ==[/bold]")
+            console.print(
+                "  1) tickers refresh --markets all --force → 2) futures contracts --refresh"
+            )
+            rc = run_cache_refresh_job(main_fn=main)
+        else:
+            console.print("[bold]== schedule run fetch ==[/bold]")
+            console.print("  1) fetch → 2) aggregate → 3) status --check")
+            rc = run_scheduled_job(
+                fetch_args=fetch_args,
+                skip_aggregate=skip_aggregate,
+                skip_status=skip_status,
+                main_fn=main,
+            )
         if rc == 0:
             console.print("[green]Job terminé avec succès.[/green]")
         else:
@@ -1507,55 +1563,71 @@ def _cmd_schedule(settings: Settings | None, args: argparse.Namespace) -> int:
     if sub == "status":
         console.print("[bold]== schedule status ==[/bold]")
         console.print(f"  binary : {resolve_binary()}")
-        sd = systemd_status()
-        if sd.get("installed"):
-            console.print(
-                f"  systemd : installed enabled={sd.get('enabled')} "
-                f"active={sd.get('active')} next={sd.get('next') or '?'}"
-            )
-            console.print(f"    timer : {sd.get('timer_path')}")
-        else:
-            console.print("  systemd : non installé")
-        cr = cron_status()
-        if cr.get("installed"):
-            console.print(f"  cron    : {cr.get('line')}")
-        else:
-            console.print("  cron    : non installé")
+        for jid in JOB_IDS:
+            spec = get_job(jid)
+            console.print(f"\n  [bold]{jid}[/bold]  ({spec.description})")
+            sd = systemd_status(job=jid)
+            if sd.get("installed"):
+                console.print(
+                    f"    systemd : installed enabled={sd.get('enabled')} "
+                    f"active={sd.get('active')} next={sd.get('next') or '?'}"
+                )
+                console.print(f"      timer : {sd.get('timer_path')}")
+            else:
+                console.print("    systemd : non installé")
+            cr = cron_status(job=jid)
+            if cr.get("installed"):
+                console.print(f"    cron    : {cr.get('line')}")
+            else:
+                console.print("    cron    : non installé")
         return 0
 
     if sub == "show":
+        job = getattr(args, "job", JOB_FETCH) or JOB_FETCH
+        spec = get_job(job)
         backend = args.backend
         if backend == "auto":
             backend = detect_backend()
         when = args.when
         fetch_args = getattr(args, "fetch_args", "") or ""
+        if job == JOB_CACHES and fetch_args:
+            console.print("[yellow]--fetch-args ignoré pour le job caches[/yellow]")
+            fetch_args = ""
         binary = resolve_binary()
-        console.print(f"[bold]== schedule show ({backend}) ==[/bold]")
+        console.print(f"[bold]== schedule show {job} ({backend}) ==[/bold]")
         console.print(f"binary: {binary}")
         if backend == "systemd":
-            cal = when or DEFAULT_ON_CALENDAR
-            console.print("\n--- myquantstore-fetch.service ---")
-            console.print(render_service_unit(binary=binary, fetch_args=fetch_args))
-            console.print("--- myquantstore-fetch.timer ---")
-            console.print(render_timer_unit(on_calendar=cal))
+            cal = when or spec.default_on_calendar
+            console.print(f"\n--- {spec.service_name}.service ---")
+            console.print(render_service_unit(job=spec, binary=binary, fetch_args=fetch_args))
+            console.print(f"--- {spec.service_name}.timer ---")
+            console.print(render_timer_unit(job=spec, on_calendar=cal))
         else:
-            sched = when or DEFAULT_CRON
+            sched = when or spec.default_cron
             console.print("\n--- crontab block ---")
-            console.print(render_cron_block(schedule=sched, binary=binary, fetch_args=fetch_args))
+            console.print(
+                render_cron_block(job=spec, schedule=sched, binary=binary, fetch_args=fetch_args)
+            )
         return 0
 
     if sub == "install":
+        job = getattr(args, "job", JOB_FETCH) or JOB_FETCH
+        spec = get_job(job)
         backend = args.backend
         if backend == "auto":
             backend = detect_backend()
             console.print(f"[dim]backend auto → {backend}[/dim]")
         when = args.when
         fetch_args = getattr(args, "fetch_args", "") or ""
+        if job == JOB_CACHES and fetch_args:
+            console.print("[yellow]--fetch-args ignoré pour le job caches[/yellow]")
+            fetch_args = ""
         dry = bool(getattr(args, "dry_run", False))
         try:
             if backend == "systemd":
                 result = install_systemd(
-                    on_calendar=when or DEFAULT_ON_CALENDAR,
+                    job=spec,
+                    on_calendar=when or spec.default_on_calendar,
                     fetch_args=fetch_args,
                     dry_run=dry,
                 )
@@ -1566,7 +1638,7 @@ def _cmd_schedule(settings: Settings | None, args: argparse.Namespace) -> int:
                     console.print(f"[dim]→ {result['timer_path']}[/dim]")
                 else:
                     console.print(
-                        f"[green]systemd timer installé[/green] "
+                        f"[green]systemd timer {job} installé[/green] "
                         f"({result.get('on_calendar')}) → {result.get('timer_path')}"
                     )
                     console.print(
@@ -1575,7 +1647,8 @@ def _cmd_schedule(settings: Settings | None, args: argparse.Namespace) -> int:
                     )
             else:
                 result = install_cron(
-                    schedule=when or DEFAULT_CRON,
+                    job=spec,
+                    schedule=when or spec.default_cron,
                     fetch_args=fetch_args,
                     dry_run=dry,
                 )
@@ -1583,25 +1656,30 @@ def _cmd_schedule(settings: Settings | None, args: argparse.Namespace) -> int:
                     console.print(result["block"])
                 else:
                     console.print(
-                        f"[green]cron installé[/green] ({result.get('schedule')})\n"
+                        f"[green]cron {job} installé[/green] ({result.get('schedule')})\n"
                         f"{result.get('block')}"
                     )
         except RuntimeError as exc:
             console.print(f"[red]Erreur schedule install:[/red] {exc}")
             return 1
+        if job == JOB_FETCH and not dry:
+            console.print(
+                "[dim]Pour les caches Massive : myquantstore schedule install caches[/dim]"
+            )
         return 0
 
     if sub == "uninstall":
+        job = getattr(args, "job", "all") or "all"
         backend = getattr(args, "backend", "all")
         targets = ["systemd", "cron"] if backend in ("all", "auto") else [backend]
         for t in targets:
             try:
                 if t == "systemd":
-                    r = uninstall_systemd()
-                    console.print(f"systemd : removed={r.get('removed')}")
+                    r = uninstall_systemd(job=job)
+                    console.print(f"systemd ({job}): removed={r.get('removed')}")
                 else:
-                    r = uninstall_cron()
-                    console.print(f"cron : removed={r.get('removed')}")
+                    r = uninstall_cron(job=job)
+                    console.print(f"cron ({job}): removed={r.get('removed')}")
             except RuntimeError as exc:
                 console.print(f"[yellow]{t}:[/yellow] {exc}")
         return 0
@@ -1698,13 +1776,7 @@ def _cmd_fetch(settings: Settings, args: argparse.Namespace) -> int:
         console.print("[red]Erreur:[/red] Aucune clé API configurée. Exécutez 'myquantstore setup-key'.")
         return 1
 
-    # Client Massive optionnel si only 1day
-    if needs_massive or not args.dry_run:
-        client_cm = MassiveClient(settings)
-    else:
-        client_cm = MassiveClient(settings)
-
-    with client_cm as client:
+    with MassiveClient(settings) as client:
         if not args.no_cascade:
             print_status_snapshot(instruments, settings)
 
@@ -1755,7 +1827,10 @@ def _cmd_fetch(settings: Settings, args: argparse.Namespace) -> int:
             f"\n[bold red]⚠ {stale_count} job(s) avec données périmées (STALE)[/bold red]"
         )
 
-    return 0
+    failed = any(
+        result.get("status") in {"error", "not_implemented"} for result in results.values()
+    )
+    return 1 if failed else 0
 
 
 def _format_coverage_suffix(result: dict) -> str:
@@ -1778,6 +1853,7 @@ def _format_coverage_suffix(result: dict) -> str:
 def _cmd_aggregate(settings: Settings, args: argparse.Namespace) -> int:
     """Commande ``aggregate`` : régénère le cache agrégé (générique multi-type)."""
     from myquantstore.api.client import MassiveClient
+    from myquantstore.instruments import RESOLUTION_1DAY
     from myquantstore.pipeline.aggregator import aggregate
     from myquantstore.pipeline.cascade import ensure_raw_dumps, print_status_snapshot
     from myquantstore.pipeline.historian import resolve_fetch_resolutions
@@ -1793,32 +1869,32 @@ def _cmd_aggregate(settings: Settings, args: argparse.Namespace) -> int:
     for inst in instruments:
         for resolution in resolutions:
             if not raw_dumps_exist(inst, settings, resolution=resolution):
-                if settings.api_key:
-                    with MassiveClient(settings) as client:
-                        if not args.no_cascade:
-                            print_status_snapshot([inst], settings)
-                        try:
-                            ensure_raw_dumps(
-                                inst,
-                                client,
-                                settings,
-                                no_cascade=args.no_cascade,
-                                resolution=resolution,
-                            )
-                        except NotImplementedError as e:
-                            console.print(
-                                f"  {inst.key}[{resolution}]: [yellow]NON IMPLÉMENTÉ[/yellow] ({e})"
-                            )
-                            continue
-                        except Exception as e:
-                            console.print(f"[red]Erreur cascade {inst.key}[{resolution}]:[/red] {e}")
-                            return 1
-                else:
+                needs_massive = resolution != RESOLUTION_1DAY
+                if needs_massive and not settings.api_key:
                     console.print(
                         f"[yellow]Skip[/yellow] {inst.key}[{resolution}]: pas de dumps "
-                        "(et pas de clé API pour cascade)."
+                        "(et pas de clé API Massive pour cascade 1min)."
                     )
                     continue
+                with MassiveClient(settings) as client:
+                    if not args.no_cascade:
+                        print_status_snapshot([inst], settings)
+                    try:
+                        ensure_raw_dumps(
+                            inst,
+                            client,
+                            settings,
+                            no_cascade=args.no_cascade,
+                            resolution=resolution,
+                        )
+                    except NotImplementedError as e:
+                        console.print(
+                            f"  {inst.key}[{resolution}]: [yellow]NON IMPLÉMENTÉ[/yellow] ({e})"
+                        )
+                        continue
+                    except Exception as e:
+                        console.print(f"[red]Erreur cascade {inst.key}[{resolution}]:[/red] {e}")
+                        return 1
 
             df = aggregate(inst, settings, resolution=resolution)
             console.print(
@@ -1858,7 +1934,7 @@ def _cmd_query(settings: Settings, args: argparse.Namespace) -> int:
     from myquantstore.api.client import MassiveClient
     from myquantstore.instruments import RESOLUTION_1DAY
     from myquantstore.pipeline.cascade import ensure_aggregate, print_status_snapshot
-    from myquantstore.query.reader import query
+    from myquantstore.query.reader import DataQualityError, parse_query_datetime, query
 
     try:
         instrument = _resolve_instrument_arg(settings, args.instrument, args.type)
@@ -1866,8 +1942,12 @@ def _cmd_query(settings: Settings, args: argparse.Namespace) -> int:
         console.print(f"[red]Erreur:[/red] {e}")
         return 1
 
-    start = datetime.fromisoformat(args.start) if args.start else None
-    end = datetime.fromisoformat(args.end) if args.end else None
+    try:
+        start = parse_query_datetime(args.start) if args.start else None
+        end = parse_query_datetime(args.end, is_end=True) if args.end else None
+    except ValueError as e:
+        console.print(f"[red]Erreur:[/red] date invalide ({e})")
+        return 1
 
     intraday_begin = None
     intraday_end = None
@@ -1904,9 +1984,9 @@ def _cmd_query(settings: Settings, args: argparse.Namespace) -> int:
 
     chain = None
     if not args.no_cascade and instrument.type.implemented:
-        # 1day n'a pas besoin de clé Massive ; 1min si
-        need_client = resolution != RESOLUTION_1DAY or bool(settings.api_key)
-        if need_client:
+        # 1day Yahoo n'a pas besoin de clé Massive ; 1min si
+        can_cascade = resolution == RESOLUTION_1DAY or bool(settings.api_key)
+        if can_cascade:
             with MassiveClient(settings) as client:
                 try:
                     chain = ensure_aggregate(
@@ -1926,7 +2006,7 @@ def _cmd_query(settings: Settings, args: argparse.Namespace) -> int:
             if not aggregate_exists(instrument, settings, resolution=resolution):
                 console.print(
                     f"[red]Erreur:[/red] Aucun agrégé {resolution} pour {instrument.key}. "
-                    "Exécutez 'myquantstore fetch --timeframe 1day'."
+                    "Exécutez 'myquantstore setup-key' puis 'myquantstore fetch --timeframe 1min'."
                 )
                 return 1
             chain = build_chain(instrument)
@@ -1975,6 +2055,9 @@ def _cmd_query(settings: Settings, args: argparse.Namespace) -> int:
         )
     except ValueError as e:
         console.print(f"[red]Erreur:[/red] {e}")
+        return 1
+    except DataQualityError as e:
+        console.print(f"[red]Qualité:[/red] {e}")
         return 1
     except NotImplementedError as e:
         console.print(f"[yellow]Non implémenté:[/yellow] {e}")

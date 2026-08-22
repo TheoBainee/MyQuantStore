@@ -1,0 +1,16 @@
+# MyQuantStore — timer caches samedi 03:00 (heure locale)
+# Préférer: myquantstore schedule install caches
+#
+# systemctl --user enable --now myquantstore-caches.timer
+# systemctl --user list-timers myquantstore-caches.timer
+
+[Unit]
+Description=MyQuantStore periodic Massive cache refresh
+
+[Timer]
+OnCalendar=Sat *-*-* 03:00:00
+Persistent=true
+Unit=myquantstore-caches.service
+
+[Install]
+WantedBy=timers.target

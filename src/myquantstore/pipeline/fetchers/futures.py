@@ -227,7 +227,7 @@ def _determine_segment_range(
     range_start = max(cover_start, seg_active_start)
     range_end = min(cover_end, seg_active_end)
 
-    if range_start >= range_end:
+    if range_start > range_end:
         return None, None
 
     return range_start.isoformat(), range_end.isoformat()

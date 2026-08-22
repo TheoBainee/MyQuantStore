@@ -124,11 +124,12 @@ série back-adjusted vers le contrat le plus récent (ratio des closes au
 
 - `base.InstrumentFetcher` (ABC) — `fetch(instrument, settings, client, force, dry_run)`.
 - `FuturesFetcher` — RolloverChain + `/futures/v1/aggs/{ticker}` (range par segment).
-- `StocksFetcher` — `/v2/aggs/ticker/{t}/range/...` (`adjusted=false`) + cache splits.
+- `StocksFetcher` — `/v2/aggs/ticker/{t}/range/...` (`adjusted=false`) + cache splits/dividends.
 - `V2SingleSymbolFetcher` — forex / indices via `/v2/aggs/ticker/{api_ticker}/range/...`
   (préfixes `C:` / `I:`, pas de corporate actions ; volume optionnel pour indices).
+- `YahooDailyFetcher` — track `1day` multi-type (chart Yahoo via `curl_cffi`).
 - `OptionsFetcher` — scaffold (`NotImplementedError`).
-- `get_fetcher(instrument)` — factory (options lève `NotImplementedError`).
+- `get_fetcher(instrument)` — factory Massive 1min (options lève `NotImplementedError`).
 
 `pipeline/historian.py:run_fetch` orchestre la boucle sur une liste d'instruments
 et délègue au fetcher adapté. Le retour est un dict homogène
@@ -140,7 +141,7 @@ et délègue au fetcher adapté. Le retour est un dict homogène
 
 ```
 futures : contracts (/futures/v1/contracts) → fetch → aggregate → query
-stocks  : splits (/stocks/v1/splits)        → fetch → aggregate → query
+stocks  : splits + dividends                → fetch → aggregate → query
 forex/indices :                              fetch → aggregate → query
 options : NotImplemented
 ```
@@ -265,8 +266,9 @@ log_dir = "~/.local/share/myquantstore/logs"
   lever l'ambiguïté. Si omis, opère sur **tous** les instruments configurés.
 - `myquantstore futures contracts [--symbol ES]` — cache contrats futures.
 - `myquantstore options contracts` — scaffold (`NotImplementedError`).
-- `query`/`chart` : `--no-split` (stocks), `--adjust` (`NotImplementedError`),
-  `--normalize-tick-size` / `--check-ticksize-accuracy` (futures, requièrent la chaîne).
+- `query`/`chart` : `--no-split` (stocks, bruts), `--adjust` (Panama futures /
+  dividends stocks après splits), `--normalize-tick-size` /
+  `--check-ticksize-accuracy` (futures, requièrent la chaîne).
 
 ## 10. Statut d'implémentation
 

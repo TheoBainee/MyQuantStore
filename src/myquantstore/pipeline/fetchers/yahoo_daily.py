@@ -114,7 +114,7 @@ class YahooDailyFetcher(InstrumentFetcher):
             cover_end = today
             use_max = False
 
-        if not use_max and cover_start is not None and cover_start >= cover_end:
+        if not use_max and cover_start is not None and cover_start > cover_end:
             logger.warning(f"Rien à fetcher daily pour {instrument.key}")
             result["status"] = "no_range"
             attach_coverage_fields(result, instrument, settings, resolution, today=today)

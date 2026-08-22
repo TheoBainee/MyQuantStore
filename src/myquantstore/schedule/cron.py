@@ -6,45 +6,56 @@ import subprocess
 from pathlib import Path
 
 from myquantstore.schedule.common import (
-    CRON_BEGIN,
-    CRON_END,
-    DEFAULT_CRON,
+    JOB_FETCH,
+    JobSpec,
+    get_job,
     resolve_binary,
+    resolve_job_ids,
     shell_join_exec,
 )
 
 
 def render_cron_line(
     *,
-    schedule: str = DEFAULT_CRON,
+    job: str | JobSpec | None = None,
+    schedule: str | None = None,
     binary: str | None = None,
     fetch_args: str = "",
     log_path: Path | None = None,
 ) -> str:
+    spec = get_job(job)
     bin_path = binary or resolve_binary()
-    extra = ["schedule", "run"]
+    extra = list(spec.run_cli)
     if fetch_args.strip():
-        # cron: passer les args après run ; shlex déjà dans runner via --fetch-args
         extra.extend(["--fetch-args", fetch_args.strip()])
     cmd = shell_join_exec(bin_path, *extra)
-    log = log_path or (Path.home() / ".local" / "share" / "myquantstore" / "logs" / "schedule.log")
-    # PATH minimal → binary absolu déjà résolu
-    return f"{schedule} {cmd} >> {log} 2>&1"
+    log = log_path or (
+        Path.home() / ".local" / "share" / "myquantstore" / "logs" / spec.cron_log_name
+    )
+    cron_when = schedule or spec.default_cron
+    return f"{cron_when} {cmd} >> {log} 2>&1"
 
 
 def render_cron_block(
     *,
-    schedule: str = DEFAULT_CRON,
+    job: str | JobSpec | None = None,
+    schedule: str | None = None,
     binary: str | None = None,
     fetch_args: str = "",
 ) -> str:
-    line = render_cron_line(schedule=schedule, binary=binary, fetch_args=fetch_args)
-    return f"{CRON_BEGIN}\n{line}\n{CRON_END}\n"
+    spec = get_job(job)
+    line = render_cron_line(job=spec, schedule=schedule, binary=binary, fetch_args=fetch_args)
+    return f"{spec.cron_begin}\n{line}\n{spec.cron_end}\n"
 
 
-def merge_crontab(existing: str, block: str) -> str:
-    """Remplace le bloc MYQUANTSTORE s'il existe, sinon l'ajoute."""
-    cleaned = strip_myquantstore_block(existing).rstrip()
+def merge_crontab(
+    existing: str,
+    block: str,
+    *,
+    job: str | JobSpec | None = None,
+) -> str:
+    """Remplace le bloc du job s'il existe, sinon l'ajoute (les autres jobs restent)."""
+    cleaned = strip_job_block(existing, job).rstrip()
     if cleaned and not cleaned.endswith("\n"):
         cleaned += "\n"
     if cleaned:
@@ -52,16 +63,17 @@ def merge_crontab(existing: str, block: str) -> str:
     return cleaned + block
 
 
-def strip_myquantstore_block(crontab: str) -> str:
+def strip_job_block(crontab: str, job: str | JobSpec | None = None) -> str:
+    spec = get_job(job)
     lines = crontab.splitlines(keepends=True)
     out: list[str] = []
     skipping = False
     for line in lines:
         stripped = line.strip()
-        if stripped == CRON_BEGIN:
+        if stripped == spec.cron_begin:
             skipping = True
             continue
-        if stripped == CRON_END:
+        if stripped == spec.cron_end:
             skipping = False
             continue
         if not skipping:
@@ -69,54 +81,79 @@ def strip_myquantstore_block(crontab: str) -> str:
     return "".join(out)
 
 
+def strip_myquantstore_block(crontab: str) -> str:
+    """Compat : retire uniquement le bloc fetch."""
+    return strip_job_block(crontab, JOB_FETCH)
+
+
 def install_cron(
     *,
-    schedule: str = DEFAULT_CRON,
+    job: str | JobSpec | None = None,
+    schedule: str | None = None,
     fetch_args: str = "",
     binary: str | None = None,
     dry_run: bool = False,
 ) -> dict[str, object]:
-    block = render_cron_block(schedule=schedule, binary=binary, fetch_args=fetch_args)
+    spec = get_job(job)
+    cron_when = schedule or spec.default_cron
+    block = render_cron_block(job=spec, schedule=cron_when, binary=binary, fetch_args=fetch_args)
     current = _read_crontab()
-    merged = merge_crontab(current, block)
+    merged = merge_crontab(current, block, job=spec)
     if dry_run:
-        return {"backend": "cron", "dry_run": True, "crontab": merged, "block": block}
+        return {
+            "backend": "cron",
+            "job": spec.id,
+            "dry_run": True,
+            "crontab": merged,
+            "block": block,
+        }
     _write_crontab(merged)
-    return {"backend": "cron", "schedule": schedule, "block": block}
+    return {"backend": "cron", "job": spec.id, "schedule": cron_when, "block": block}
 
 
-def uninstall_cron(*, dry_run: bool = False) -> dict[str, object]:
+def uninstall_cron(*, job: str | None = JOB_FETCH, dry_run: bool = False) -> dict[str, object]:
+    job_ids = resolve_job_ids(job)
     current = _read_crontab()
-    cleaned = strip_myquantstore_block(current)
+    cleaned = current
+    present = False
+    for jid in job_ids:
+        spec = get_job(jid)
+        if _block_present(cleaned, spec.cron_begin):
+            present = True
+        cleaned = strip_job_block(cleaned, jid)
     if dry_run:
-        return {"backend": "cron", "dry_run": True, "crontab": cleaned}
-    if cleaned.strip() == current.strip() and CRON_BEGIN not in current:
-        return {"backend": "cron", "removed": False}
+        return {"backend": "cron", "dry_run": True, "crontab": cleaned, "jobs": list(job_ids)}
+    if not present:
+        return {"backend": "cron", "removed": False, "jobs": list(job_ids)}
     if cleaned.strip():
         _write_crontab(cleaned if cleaned.endswith("\n") else cleaned + "\n")
     else:
-        # crontab vide : supprimer
         subprocess.run(["crontab", "-r"], capture_output=True, check=False)
-    return {"backend": "cron", "removed": True}
+    return {"backend": "cron", "removed": True, "jobs": list(job_ids)}
 
 
-def cron_status() -> dict[str, object]:
+def cron_status(*, job: str | JobSpec | None = None) -> dict[str, object]:
+    spec = get_job(job)
     current = _read_crontab()
-    if CRON_BEGIN not in current:
-        return {"installed": False, "backend": "cron"}
+    if not _block_present(current, spec.cron_begin):
+        return {"installed": False, "backend": "cron", "job": spec.id}
     line = None
     in_block = False
     for raw in current.splitlines():
         s = raw.strip()
-        if s == CRON_BEGIN:
+        if s == spec.cron_begin:
             in_block = True
             continue
-        if s == CRON_END:
+        if s == spec.cron_end:
             break
         if in_block and s and not s.startswith("#"):
             line = s
             break
-    return {"installed": True, "backend": "cron", "line": line}
+    return {"installed": True, "backend": "cron", "job": spec.id, "line": line}
+
+
+def _block_present(crontab: str, begin: str) -> bool:
+    return any(line.strip() == begin for line in crontab.splitlines())
 
 
 def _read_crontab() -> str:
@@ -127,7 +164,6 @@ def _read_crontab() -> str:
         check=False,
     )
     if proc.returncode != 0:
-        # no crontab for user
         return ""
     return proc.stdout or ""
 

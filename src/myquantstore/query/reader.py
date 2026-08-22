@@ -78,6 +78,19 @@ class DataQualityError(Exception):
     """Levée quand le bilan de qualité tick_size dépasse le seuil d'erreur."""
 
 
+def parse_query_datetime(value: str, *, is_end: bool = False) -> datetime:
+    """Parse ``YYYY-MM-DD`` ou ISO datetime.
+
+    Une date seule en borne de fin est inclusive (fin de journée 23:59:59.999999).
+    Un datetime explicite est conservé tel quel.
+    """
+    raw = value.strip()
+    parsed = datetime.fromisoformat(raw)
+    if is_end and len(raw) == 10:
+        return parsed.replace(hour=23, minute=59, second=59, microsecond=999999)
+    return parsed
+
+
 def query(
     instrument: Instrument,
     settings: Settings,
@@ -204,6 +217,11 @@ def query(
     if check_ticksize_accuracy and chain is not None:
         bilan = check_ticksize_accuracy_fn(df, chain, settings.data_quality_trigger)
         _print_quality_bilan(str(instrument), bilan)
+        if not bilan.is_empty() and bilan.filter(pl.col("statut") == "ERREUR").height > 0:
+            raise DataQualityError(
+                f"Qualité tick_size ERREUR pour {instrument} "
+                f"(seuil {DATA_QUALITY_ERROR_THRESHOLD:.0%})"
+            )
 
     # --- Dédup timestamps (après adjust / bilan, avant normalize + resample) ---
     if dedup_timestamps:

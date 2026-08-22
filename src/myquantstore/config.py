@@ -304,7 +304,7 @@ class Settings(BaseSettings):
             ) from exc
         return name
 
-    @field_validator("overlap_buffer_days")
+    @field_validator("overlap_buffer_days", "yahoo_overlap_buffer_days")
     @classmethod
     def _buffer_non_neg(cls, v: int) -> int:
         if v < 0:

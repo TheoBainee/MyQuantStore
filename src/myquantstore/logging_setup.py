@@ -16,6 +16,7 @@ from datetime import UTC
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from rich.logging import RichHandler
 
@@ -88,21 +89,44 @@ def get_logger(name: str | None = None) -> logging.Logger:
 # --- Helpers de log DEBUG (ne se déclenchent que si level >= DEBUG) ---
 
 
+_SECRET_PARAM_MARKERS = ("key", "token")
+
+
+def _is_secret_param(name: str) -> bool:
+    lowered = name.lower()
+    return any(marker in lowered for marker in _SECRET_PARAM_MARKERS)
+
+
+def redact_url(path: str) -> str:
+    """Masque apiKey / token dans une URL (ex: ``next_url`` Massive)."""
+    if "?" not in path:
+        return path
+    parts = urlsplit(path)
+    if not parts.query:
+        return path
+    redacted = [
+        (k, "****" if _is_secret_param(k) else v)
+        for k, v in parse_qsl(parts.query, keep_blank_values=True)
+    ]
+    return urlunsplit(
+        (parts.scheme, parts.netloc, parts.path, urlencode(redacted, safe="*"), parts.fragment)
+    )
+
+
 def log_api_call(logger: logging.Logger, method: str, path: str, **params: object) -> None:
     """Log un appel API en DEBUG (endpoint + params, clé masquée).
 
     :param logger: Logger à utiliser.
     :param method: Méthode HTTP (GET, POST…).
-    :param path: Path de l'endpoint (ex: /futures/v1/contracts).
+    :param path: Path de l'endpoint (ex: /futures/v1/contracts) ou URL complète.
     :param params: Paramètres de la requête.
     """
     if logger.isEnabledFor(logging.DEBUG):
-        # On masque tout paramètre qui pourrait contenir la clé API
         safe_params = {
-            k: ("****" if "key" in k.lower() or "token" in k.lower() else v)
+            k: ("****" if _is_secret_param(k) else v)
             for k, v in params.items()
         }
-        logger.debug(f"API {method} {path} params={safe_params}")
+        logger.debug(f"API {method} {redact_url(path)} params={safe_params}")
 
 
 def log_cache_skip(logger: logging.Logger, cache_name: str, product_code: str, last_fetched: str) -> None:

@@ -1,11 +1,17 @@
-# MyQuantStore — crontab utilisateur (samedi 01:00)
+# MyQuantStore — crontab utilisateur
 # Préférer: myquantstore schedule install --backend cron
+#           myquantstore schedule install caches --backend cron
 #
 # Remplacer @BINARY@ par le chemin absolu (command -v myquantstore).
 # Logs: ~/.local/share/myquantstore/logs/schedule.log
+#       ~/.local/share/myquantstore/logs/schedule-caches.log
 #
-# crontab -e → coller le bloc ci-dessous
+# crontab -e → coller les blocs ci-dessous
 
 # BEGIN MYQUANTSTORE
-0 1 * * 6 @BINARY@ schedule run >> ~/.local/share/myquantstore/logs/schedule.log 2>&1
+0 7 * * 6 @BINARY@ schedule run >> ~/.local/share/myquantstore/logs/schedule.log 2>&1
 # END MYQUANTSTORE
+
+# BEGIN MYQUANTSTORE-CACHES
+0 3 * * 6 @BINARY@ schedule run caches >> ~/.local/share/myquantstore/logs/schedule-caches.log 2>&1
+# END MYQUANTSTORE-CACHES

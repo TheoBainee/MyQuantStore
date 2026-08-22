@@ -1,5 +1,5 @@
 # MyQuantStore — oneshot fetch + aggregate + status --check
-# Préférer: myquantstore schedule install
+# Préférer: myquantstore schedule install fetch
 #
 # Installation manuelle (user):
 #   BIN=$(command -v myquantstore)

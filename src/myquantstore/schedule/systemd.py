@@ -7,10 +7,11 @@ import subprocess
 from pathlib import Path
 
 from myquantstore.schedule.common import (
-    DEFAULT_ON_CALENDAR,
-    SERVICE_NAME,
-    TIMER_NAME,
+    JOB_FETCH,
+    JobSpec,
+    get_job,
     resolve_binary,
+    resolve_job_ids,
     shell_join_exec,
 )
 
@@ -21,17 +22,19 @@ def user_unit_dir() -> Path:
 
 def render_service_unit(
     *,
+    job: str | JobSpec | None = None,
     binary: str | None = None,
     fetch_args: str = "",
 ) -> str:
+    spec = get_job(job)
     bin_path = binary or resolve_binary()
-    extra = ["schedule", "run"]
+    extra = list(spec.run_cli)
     if fetch_args.strip():
         extra.extend(["--fetch-args", fetch_args.strip()])
     exec_start = shell_join_exec(bin_path, *extra)
     return (
         "[Unit]\n"
-        "Description=MyQuantStore OHLCV fetch + aggregate + health check\n"
+        f"Description={spec.unit_description}\n"
         "After=network-online.target\n"
         "Wants=network-online.target\n"
         "\n"
@@ -45,15 +48,21 @@ def render_service_unit(
     )
 
 
-def render_timer_unit(*, on_calendar: str = DEFAULT_ON_CALENDAR) -> str:
+def render_timer_unit(
+    *,
+    job: str | JobSpec | None = None,
+    on_calendar: str | None = None,
+) -> str:
+    spec = get_job(job)
+    calendar = on_calendar or spec.default_on_calendar
     return (
         "[Unit]\n"
-        "Description=MyQuantStore periodic historisation timer\n"
+        f"Description={spec.timer_description}\n"
         "\n"
         "[Timer]\n"
-        f"OnCalendar={on_calendar}\n"
+        f"OnCalendar={calendar}\n"
         "Persistent=true\n"
-        "Unit=myquantstore-fetch.service\n"
+        f"Unit={spec.service_name}.service\n"
         "\n"
         "[Install]\n"
         "WantedBy=timers.target\n"
@@ -62,20 +71,24 @@ def render_timer_unit(*, on_calendar: str = DEFAULT_ON_CALENDAR) -> str:
 
 def install_systemd(
     *,
-    on_calendar: str = DEFAULT_ON_CALENDAR,
+    job: str | JobSpec | None = None,
+    on_calendar: str | None = None,
     fetch_args: str = "",
     binary: str | None = None,
     dry_run: bool = False,
 ) -> dict[str, object]:
+    spec = get_job(job)
+    calendar = on_calendar or spec.default_on_calendar
     unit_dir = user_unit_dir()
-    service_path = unit_dir / f"{SERVICE_NAME}.service"
-    timer_path = unit_dir / TIMER_NAME
-    service_body = render_service_unit(binary=binary, fetch_args=fetch_args)
-    timer_body = render_timer_unit(on_calendar=on_calendar)
+    service_path = unit_dir / f"{spec.service_name}.service"
+    timer_path = unit_dir / spec.timer_name
+    service_body = render_service_unit(job=spec, binary=binary, fetch_args=fetch_args)
+    timer_body = render_timer_unit(job=spec, on_calendar=calendar)
 
     if dry_run:
         return {
             "backend": "systemd",
+            "job": spec.id,
             "dry_run": True,
             "service_path": service_path,
             "timer_path": timer_path,
@@ -88,50 +101,64 @@ def install_systemd(
     timer_path.write_text(timer_body, encoding="utf-8")
 
     _systemctl("daemon-reload")
-    _systemctl("enable", "--now", TIMER_NAME)
+    _systemctl("enable", "--now", spec.timer_name)
 
     return {
         "backend": "systemd",
+        "job": spec.id,
         "service_path": service_path,
         "timer_path": timer_path,
-        "on_calendar": on_calendar,
+        "on_calendar": calendar,
         "enabled": True,
     }
 
 
-def uninstall_systemd(*, dry_run: bool = False) -> dict[str, object]:
+def uninstall_systemd(
+    *,
+    job: str | None = JOB_FETCH,
+    dry_run: bool = False,
+) -> dict[str, object]:
     unit_dir = user_unit_dir()
-    service_path = unit_dir / f"{SERVICE_NAME}.service"
-    timer_path = unit_dir / TIMER_NAME
-    if dry_run:
-        return {"backend": "systemd", "dry_run": True, "removed": [service_path, timer_path]}
-
-    with contextlib.suppress(RuntimeError):
-        _systemctl("disable", "--now", TIMER_NAME)
     removed: list[Path] = []
-    for p in (timer_path, service_path):
-        if p.exists():
-            p.unlink()
-            removed.append(p)
+    job_ids = resolve_job_ids(job)
+    if dry_run:
+        paths: list[Path] = []
+        for jid in job_ids:
+            spec = get_job(jid)
+            paths.extend((unit_dir / spec.timer_name, unit_dir / f"{spec.service_name}.service"))
+        return {"backend": "systemd", "dry_run": True, "removed": paths, "jobs": list(job_ids)}
+
+    for jid in job_ids:
+        spec = get_job(jid)
+        service_path = unit_dir / f"{spec.service_name}.service"
+        timer_path = unit_dir / spec.timer_name
+        with contextlib.suppress(RuntimeError):
+            _systemctl("disable", "--now", spec.timer_name)
+        for p in (timer_path, service_path):
+            if p.exists():
+                p.unlink()
+                removed.append(p)
     with contextlib.suppress(RuntimeError):
         _systemctl("daemon-reload")
-    return {"backend": "systemd", "removed": removed}
+    return {"backend": "systemd", "removed": removed, "jobs": list(job_ids)}
 
 
-def systemd_status() -> dict[str, object]:
+def systemd_status(*, job: str | JobSpec | None = None) -> dict[str, object]:
+    spec = get_job(job)
     unit_dir = user_unit_dir()
-    service_path = unit_dir / f"{SERVICE_NAME}.service"
-    timer_path = unit_dir / TIMER_NAME
+    service_path = unit_dir / f"{spec.service_name}.service"
+    timer_path = unit_dir / spec.timer_name
     installed = service_path.exists() and timer_path.exists()
     if not installed:
-        return {"installed": False, "backend": "systemd"}
+        return {"installed": False, "backend": "systemd", "job": spec.id}
 
-    enabled = _systemctl_bool("is-enabled", TIMER_NAME)
-    active = _systemctl_bool("is-active", TIMER_NAME)
-    next_run = _timer_next()
+    enabled = _systemctl_bool("is-enabled", spec.timer_name)
+    active = _systemctl_bool("is-active", spec.timer_name)
+    next_run = _timer_next(spec.timer_name)
     return {
         "installed": True,
         "backend": "systemd",
+        "job": spec.id,
         "enabled": enabled,
         "active": active,
         "next": next_run,
@@ -172,13 +199,12 @@ def _systemctl_bool(*args: str) -> bool:
         return False
 
 
-def _timer_next() -> str | None:
+def _timer_next(timer_name: str) -> str | None:
     try:
-        out = _systemctl("list-timers", TIMER_NAME, "--no-pager")
+        out = _systemctl("list-timers", timer_name, "--no-pager")
     except RuntimeError:
         return None
-    lines = [ln for ln in out.splitlines() if TIMER_NAME in ln]
+    lines = [ln for ln in out.splitlines() if timer_name in ln]
     if not lines:
         return None
-    # First columns: NEXT LEFT LAST PASSED UNIT ACTIVATES
     return " ".join(lines[0].split()[:2]) if lines[0].split() else lines[0].strip()

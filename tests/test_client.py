@@ -197,3 +197,14 @@ class TestPagination:
 
         assert results == []
         assert client.page_count == 1
+
+
+class TestLogRedaction:
+    def test_redact_url_masks_apikey(self):
+        from myquantstore.logging_setup import redact_url
+
+        url = "https://api.massive.com/v2/aggs?ticker=ES&apiKey=SECRET123&limit=10"
+        redacted = redact_url(url)
+        assert "SECRET123" not in redacted
+        assert "apiKey=****" in redacted
+        assert "ticker=ES" in redacted

@@ -23,7 +23,7 @@ from myquantstore.chains import InstrumentChain, build_chain
 from myquantstore.config import Settings
 from myquantstore.instruments import Instrument, InstrumentType
 from myquantstore.logging_setup import get_logger
-from myquantstore.query.reader import query
+from myquantstore.query.reader import parse_query_datetime, query
 from myquantstore.storage.aggregate_cache import aggregate_exists, list_aggregate_resolutions
 from myquantstore.storage.coverage import InstrumentHealth, assess_instrument_health
 
@@ -115,7 +115,7 @@ def create_serve_app(settings: Settings) -> FastAPI:
             raise HTTPException(status_code=400, detail="timescale_nb doit être >= 1")
 
         start_dt = _parse_datetime(start, "start")
-        end_dt = _parse_datetime(end, "end")
+        end_dt = _parse_datetime(end, "end", is_end=True)
         begin_t, end_t = _parse_intraday(intraday_begin, intraday_end)
         from myquantstore.cli import _parse_include_cols
 
@@ -234,11 +234,11 @@ def _http_for_resolve(exc: ValueError) -> HTTPException:
     return HTTPException(status_code=404, detail=msg)
 
 
-def _parse_datetime(value: str | None, name: str) -> datetime | None:
+def _parse_datetime(value: str | None, name: str, *, is_end: bool = False) -> datetime | None:
     if value is None or value == "":
         return None
     try:
-        return datetime.fromisoformat(value)
+        return parse_query_datetime(value, is_end=is_end)
     except ValueError:
         raise HTTPException(
             status_code=400,

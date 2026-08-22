@@ -9,13 +9,21 @@ import pytest
 from myquantstore.cli import main
 from myquantstore.onboarding import init_workspace, run_doctor, write_api_key
 from myquantstore.resources import read_resource_text
-from myquantstore.schedule.common import DEFAULT_CRON, DEFAULT_ON_CALENDAR, resolve_binary
+from myquantstore.schedule.common import (
+    DEFAULT_CRON,
+    DEFAULT_ON_CALENDAR,
+    JOB_CACHES,
+    JOB_FETCH,
+    get_job,
+    resolve_binary,
+)
 from myquantstore.schedule.cron import (
     merge_crontab,
     render_cron_block,
+    strip_job_block,
     strip_myquantstore_block,
 )
-from myquantstore.schedule.runner import run_scheduled_job
+from myquantstore.schedule.runner import run_cache_refresh_job, run_scheduled_job
 from myquantstore.schedule.systemd import render_service_unit, render_timer_unit
 
 
@@ -157,8 +165,18 @@ class TestScheduleRender:
         assert "--fetch-args" in svc
         assert "--no-cascade" in svc
         timer = render_timer_unit(on_calendar=DEFAULT_ON_CALENDAR)
-        assert "OnCalendar=Sat *-*-* 01:00:00" in timer
+        assert "OnCalendar=Sat *-*-* 07:00:00" in timer
         assert "Persistent=true" in timer
+        assert "Unit=myquantstore-fetch.service" in timer
+
+    def test_caches_systemd_units(self):
+        spec = get_job(JOB_CACHES)
+        svc = render_service_unit(job=spec, binary="/usr/bin/myquantstore")
+        assert "ExecStart=/usr/bin/myquantstore schedule run caches" in svc
+        assert "--fetch-args" not in svc
+        timer = render_timer_unit(job=spec)
+        assert "OnCalendar=Sat *-*-* 03:00:00" in timer
+        assert "Unit=myquantstore-caches.service" in timer
 
     def test_cron_block_roundtrip(self):
         block = render_cron_block(
@@ -166,22 +184,57 @@ class TestScheduleRender:
             binary="/opt/myquantstore",
             fetch_args="",
         )
-        assert "0 1 * * 6" in block
+        assert "0 7 * * 6" in block
         assert "BEGIN MYQUANTSTORE" in block
+        assert "schedule run" in block
         merged = merge_crontab("# keep\n", block)
         assert "# keep" in merged
         merged2 = merge_crontab(merged, render_cron_block(schedule="0 2 * * 0"))
-        assert merged2.count("BEGIN MYQUANTSTORE") == 1
+        assert merged2.count("# BEGIN MYQUANTSTORE\n") == 1
         assert "0 2 * * 0" in merged2
         cleaned = strip_myquantstore_block(merged2)
-        assert "BEGIN MYQUANTSTORE" not in cleaned
+        assert "# BEGIN MYQUANTSTORE\n" not in cleaned
         assert "# keep" in cleaned
+
+    def test_cron_fetch_and_caches_coexist(self):
+        fetch = render_cron_block(job=JOB_FETCH, binary="/opt/mqs")
+        caches = render_cron_block(job=JOB_CACHES, binary="/opt/mqs")
+        merged = merge_crontab(merge_crontab("", fetch, job=JOB_FETCH), caches, job=JOB_CACHES)
+        assert "# BEGIN MYQUANTSTORE\n" in merged
+        assert "# BEGIN MYQUANTSTORE-CACHES\n" in merged
+        assert "schedule run caches" in merged
+        assert "0 7 * * 6" in merged
+        assert "0 3 * * 6" in merged
+        fetch2 = render_cron_block(job=JOB_FETCH, schedule="0 8 * * 6", binary="/opt/mqs")
+        rem = merge_crontab(merged, fetch2, job=JOB_FETCH)
+        assert rem.count("# BEGIN MYQUANTSTORE\n") == 1
+        assert "# BEGIN MYQUANTSTORE-CACHES\n" in rem
+        assert "0 8 * * 6" in rem
+        assert "0 3 * * 6" in rem
+        only_caches = strip_job_block(rem, JOB_FETCH)
+        assert "# BEGIN MYQUANTSTORE\n" not in only_caches
+        assert "# BEGIN MYQUANTSTORE-CACHES\n" in only_caches
 
     def test_schedule_show_cli(self, capsys):
         rc = main(["schedule", "show", "--backend", "systemd"])
         assert rc == 0
         out = capsys.readouterr().out
         assert "myquantstore-fetch.service" in out or "OnCalendar" in out
+
+    def test_schedule_show_caches_cli(self, capsys):
+        rc = main(["schedule", "show", "caches", "--backend", "systemd"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "myquantstore-caches" in out
+        assert "schedule run caches" in out
+        assert "03:00:00" in out
+
+    def test_schedule_status_lists_both_jobs(self, capsys):
+        rc = main(["schedule", "status"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "fetch" in out
+        assert "caches" in out
 
     def test_resolve_binary_nonempty(self):
         assert resolve_binary()
@@ -222,3 +275,24 @@ class TestScheduleRunner:
 
         run_scheduled_job(skip_aggregate=True, main_fn=fake_main)
         assert calls == ["fetch", "status"]
+
+    def test_run_caches_tickers_then_contracts(self):
+        calls: list[list[str]] = []
+
+        def fake_main(argv: list[str] | None = None) -> int:
+            assert argv is not None
+            calls.append(list(argv))
+            return 0
+
+        assert run_cache_refresh_job(main_fn=fake_main) == 0
+        assert calls[0] == ["tickers", "refresh", "--markets", "all", "--force"]
+        assert calls[1] == ["futures", "contracts", "--refresh"]
+
+    def test_run_caches_stops_on_tickers_failure(self):
+        def fake_main(argv: list[str] | None = None) -> int:
+            assert argv is not None
+            if argv[0] == "tickers":
+                return 3
+            return 0
+
+        assert run_cache_refresh_job(main_fn=fake_main) == 3

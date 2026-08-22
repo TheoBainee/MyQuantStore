@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from datetime import date
+from types import SimpleNamespace
+
 import pytest
 
 from myquantstore.instruments import Instrument, InstrumentType
 from myquantstore.pipeline.fetchers import get_fetcher
 from myquantstore.pipeline.fetchers.base import InstrumentFetcher
-from myquantstore.pipeline.fetchers.futures import FuturesFetcher
+from myquantstore.pipeline.fetchers.futures import FuturesFetcher, _determine_segment_range
 from myquantstore.pipeline.fetchers.options import OptionsFetcher
 from myquantstore.pipeline.fetchers.stocks import StocksFetcher
 from myquantstore.pipeline.fetchers.v2_single import V2SingleSymbolFetcher
@@ -51,3 +54,22 @@ class TestOptionsFetcherScaffold:
                 )
         finally:
             client.close()
+
+
+class TestDetermineSegmentRange:
+    def test_inclusive_single_day_on_roll(self, tmp_settings):
+        today = date(2026, 8, 22)
+        seg = SimpleNamespace(active_from=today, active_until=today)
+        gte, lte = _determine_segment_range(
+            seg, date(2026, 1, 1), today, None, None, tmp_settings
+        )
+        assert gte == "2026-08-22"
+        assert lte == "2026-08-22"
+
+    def test_empty_when_start_after_end(self, tmp_settings):
+        seg = SimpleNamespace(active_from=date(2026, 8, 23), active_until=date(2026, 8, 22))
+        gte, lte = _determine_segment_range(
+            seg, date(2026, 1, 1), date(2026, 8, 22), None, None, tmp_settings
+        )
+        assert gte is None
+        assert lte is None

@@ -23,8 +23,10 @@ Le backtest hebdo **n'attend pas** cette API. Il utilise un snapshot Parquet
   les deux. Après `--adjust` et le bilan tick size, avant normalize/resample.
 - Le chart s'appuie sur ce défaut (plus de `unique` dans `_prepare_chart_df`).
 - Package : `__init__.py` n'exporte que `__version__`. Pas de SDK public.
-- `schedule run` = fetch → aggregate → `status --check`. Pas de daemon.
-  `schedule install` **écrase** `~/.config/systemd/user/myquantstore-fetch.service`.
+- `schedule run` / `schedule run fetch` = fetch → aggregate → `status --check`.
+  `schedule run caches` = tickers + contrats (indépendant). Pas de daemon.
+  `schedule install` **écrase** `~/.config/systemd/user/myquantstore-fetch.service`
+  (le job caches a ses propres units `myquantstore-caches.*`).
 
 ### Snapshot backtest (hors myquantstore — déjà la recette)
 
@@ -32,7 +34,7 @@ Feed du backtest Python / même machine : **pas** `import query()`, **pas**
 l'API chart, **pas** `query` dans `schedule run`.
 
 ```
-sam. 01:00  myquantstore schedule run
+sam. 07:00  myquantstore schedule run
      └── OnSuccess (drop-in systemd, survit à schedule install)
             query NQ|ES --timescale-unit min --no-cascade --output …
             backtest lit le Parquet

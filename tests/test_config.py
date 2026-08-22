@@ -298,6 +298,8 @@ intraday_begin = "09:30"
     def test_validation_overlap_buffer_non_neg(self):
         with pytest.raises(Exception, match="overlap_buffer_days"):
             Settings(api_key="test", overlap_buffer_days=-1)
+        with pytest.raises(Exception, match="overlap_buffer_days"):
+            Settings(api_key="test", yahoo_overlap_buffer_days=-1)
 
     def test_validation_days_before_expiry_non_neg(self):
         with pytest.raises(Exception, match="days_before_expiry"):

@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from myquantstore.analytics.optimize import PortfolioResult, optimize
 from myquantstore.analytics.panel import build_price_panel
 from myquantstore.analytics.returns import compute_returns
+from myquantstore.analytics.risk_free import resolve_risk_free_rate
 from myquantstore.config import Settings
 from myquantstore.instruments import Instrument, InstrumentType
 from myquantstore.logging_setup import get_logger
@@ -53,10 +54,11 @@ class PortfolioService:
             adjust_dividends=True,
         )
         rets = compute_returns(panel, self.settings, kind="simple")
+        rf_quote = resolve_risk_free_rate(self.settings)
         result = optimize(
             rets,
             obj,
-            risk_free_rate=self.settings.portfolio_risk_free_rate,
+            risk_free_rate=rf_quote.rate,
             n_samples=self.settings.portfolio_frontier_samples,
             seed=self.settings.portfolio_optim_seed,
         )

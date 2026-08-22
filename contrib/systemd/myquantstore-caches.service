@@ -1,0 +1,23 @@
+# MyQuantStore — oneshot refresh caches Massive (tickers + contrats futures)
+# Préférer: myquantstore schedule install caches
+#
+# Installation manuelle (user):
+#   BIN=$(command -v myquantstore)
+#   sed "s|@BINARY@|$BIN|g" contrib/systemd/myquantstore-caches.service \
+#     > ~/.config/systemd/user/myquantstore-caches.service
+#   cp contrib/systemd/myquantstore-caches.timer ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now myquantstore-caches.timer
+
+[Unit]
+Description=MyQuantStore Massive cache refresh (tickers + futures contracts)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=@BINARY@ schedule run caches
+Nice=10
+
+[Install]
+WantedBy=default.target

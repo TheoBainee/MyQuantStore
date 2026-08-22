@@ -6,7 +6,7 @@ from datetime import date
 
 import polars as pl
 
-from myquantstore.cli import _render_df, _resolve_instruments, main
+from myquantstore.cli import _cmd_fetch, _render_df, _resolve_instruments, main
 from myquantstore.instruments import InstrumentType
 
 
@@ -387,3 +387,55 @@ class TestRenderDf:
         _render_df(df, tmp_settings, sort_col="rollover_date")
         out = capsys.readouterr().out
         assert "A" in out and "B" in out
+
+
+class TestFetchExitCode:
+    def test_nonzero_on_error(self, tmp_settings, monkeypatch):
+        from argparse import Namespace
+
+        class _Dummy:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+        monkeypatch.setattr("myquantstore.api.client.MassiveClient", lambda *a, **k: _Dummy())
+        monkeypatch.setattr(
+            "myquantstore.pipeline.historian.run_fetch",
+            lambda *a, **k: {"futures:ES[1day]": {"status": "error", "error": "boom"}},
+        )
+        args = Namespace(
+            instrument="ES",
+            type="futures",
+            timeframe="1day",
+            dry_run=False,
+            force=False,
+            no_cascade=True,
+        )
+        assert _cmd_fetch(tmp_settings, args) == 1
+
+    def test_zero_on_ok(self, tmp_settings, monkeypatch):
+        from argparse import Namespace
+
+        class _Dummy:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+        monkeypatch.setattr("myquantstore.api.client.MassiveClient", lambda *a, **k: _Dummy())
+        monkeypatch.setattr(
+            "myquantstore.pipeline.historian.run_fetch",
+            lambda *a, **k: {"futures:ES[1day]": {"status": "ok", "candles": 10}},
+        )
+        args = Namespace(
+            instrument="ES",
+            type="futures",
+            timeframe="1day",
+            dry_run=False,
+            force=False,
+            no_cascade=True,
+        )
+        assert _cmd_fetch(tmp_settings, args) == 0

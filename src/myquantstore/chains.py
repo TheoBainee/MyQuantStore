@@ -82,7 +82,7 @@ class SingleSymbolChain:
         self.instrument = instrument
         # Un seul segment : du 1er janvier 1900 à +100 ans (couvre tout l'historique).
         self._far_past = date(1900, 1, 1)
-        self._far_future = date.today().replace(year=date.today().year + 100)
+        self._far_future = _far_future_date()
 
     def active_contract(self, d: date) -> str | None:
         """Le symbole est toujours le contrat actif (pas de rollover)."""

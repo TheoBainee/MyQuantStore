@@ -9,7 +9,9 @@ import pytest
 
 from myquantstore.pipeline.aggregator import aggregate
 from myquantstore.query.reader import (
+    DataQualityError,
     check_ticksize_accuracy_fn,
+    parse_query_datetime,
     query,
 )
 from myquantstore.storage.raw_dumps import save_raw_dump
@@ -287,3 +289,47 @@ class TestCheckTicksizeAccuracy:
 
         df_after = read_aggregate(es_instrument, tmp_settings)
         assert df_after["open"].to_list() == df_before["open"].to_list()
+
+    def test_check_accuracy_raises_on_error(self, tmp_settings, es_instrument, sample_chain):
+        ts = [
+            datetime(2025, 6, 1, 9, 30, 0, tzinfo=UTC),
+            datetime(2025, 6, 1, 9, 31, 0, tzinfo=UTC),
+        ]
+        df = pl.DataFrame(
+            {
+                "window_start": ts,
+                "ticker": ["ESM5"] * 2,
+                "open": [4500.10, 4501.35],
+                "high": [4501.10, 4502.35],
+                "low": [4499.10, 4500.35],
+                "close": [4500.60, 4501.85],
+                "settlement_price": [4500.60, 4501.85],
+                "volume": [100, 150],
+                "dollar_volume": [1000.0, 2000.0],
+                "transactions": [10, 15],
+                "session_end_date": [ts[0].date(), ts[1].date()],
+            }
+        )
+        save_raw_dump(df, es_instrument, "ESM5", "20260711T183000", tmp_settings)
+        aggregate(es_instrument, tmp_settings)
+
+        with pytest.raises(DataQualityError, match="ERREUR"):
+            query(es_instrument, tmp_settings, sample_chain, check_ticksize_accuracy=True)
+
+
+class TestParseQueryDatetime:
+    def test_date_only_end_is_end_of_day(self):
+        end = parse_query_datetime("2026-07-11", is_end=True)
+        assert end.hour == 23
+        assert end.minute == 59
+        assert end.second == 59
+
+    def test_date_only_start_is_midnight(self):
+        start = parse_query_datetime("2026-07-11")
+        assert start.hour == 0
+        assert start.minute == 0
+
+    def test_explicit_datetime_kept(self):
+        end = parse_query_datetime("2026-07-11T09:30:00", is_end=True)
+        assert end.hour == 9
+        assert end.minute == 30

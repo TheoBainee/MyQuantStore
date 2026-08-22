@@ -5,11 +5,12 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
 - **Deux familles de timeframes / sources** (dual-source) :
   - **Intraday** : Massive.com, barre de base **1min** → resample query 2m/5m/1h/4h…
   - **Extraday** : Yahoo Finance (API chart `query1/2.finance.yahoo.com` via `curl_cffi`, pas yfinance/`fc.yahoo.com`), barre de base **1day** multi-type → resample 2d/1w…
-- Utiliser **Polars** en priorité (Pandas uniquement si vraiment nécessaire).
+- Utiliser **Polars** exclusivement (pas de pandas).
 - Tout le stockage se fait en **fichiers Parquet** (layout multi-type × multi-résolution).
 - Caches : contrats futures + splits/dividends Massive (1min) ; `cache/yahoo_actions/` pour daily **stocks** only.
 - Cascade type-aware **et par résolution** (query day → fetch 1day only).
 - Fetch défaut : `--timeframe all` (1min + 1day Yahoo multi-type) ; `1min` | `1day` pour cibler.
+  Exit 1 si un job est `error` ou `not_implemented` (cron / `schedule run`).
 - Mapping Yahoo : `tickers/yahoo_map.py` — stocks (`.`→`-`, skip `.WS`/`.U`), forex `=X`, indices `^`, futures continu `=F` ; overrides TOML.
 - **Futures dual-track** : 1min = contrats Massive + rollover maison ; 1day = série continue Yahoo (`ES=F`) par root. Ne jamais croiser les deux pour reconstruire un agrégat.
 
@@ -20,7 +21,7 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
   - ~/.config/myquantstore/config.toml (instruments par type, fetch, storage, futures/stocks, logging, chart...)
 - Paramètres clés configurables :
   - Instruments par type (futures = ["NQ", "ES", ...], stocks, forex, indices)
-  - timeframe = "1min"
+  - `[fetch] timeframe = "1min"` = taille de barre Massive (distinct de CLI `--timeframe all|1min|1day`)
   - overlap_buffer_days
   - history_months par type (défaut 24, 60 pour indices)
   - days_before_expiry (futures rollover)
@@ -67,7 +68,8 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
 - **Yahoo 1day stocks** : le chart livre des OHLC **déjà split-adjusted** → désajustement à l'ingest
   (`reverse_split_adjustment`) pour stocker des bruts ; cache `yahoo_actions/`.
   Les events d'un fetch **incrémental** ne doivent **jamais** écraser ce cache
-  (historique complet uniquement : period=max au 1er run, sinon refresh TTL dédié).
+  (historique complet uniquement : period=max au 1er run, sinon refresh via
+  le TTL partagé `instrument_cache.ttl_days`).
 - **Yahoo 1day forex/indices/futures** : pas de corporate actions ; dump OHLC chart tel quel.
   Futures `=F` = continu Yahoo (souvent déjà back-adjusted côté Yahoo) stocké tel quel.
 - Ajustement split appliqué **à la query** stocks (les deux résolutions) ; `--no-split` = bruts.
@@ -78,7 +80,8 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
 - Fetchers multi-type (FuturesFetcher, StocksFetcher, V2SingleSymbolFetcher, YahooDailyFetcher, OptionsFetcher scaffold).
 - Cascade type-aware dans pipeline/cascade.py.
 - Agrégateur générique (polars unique + casts).
-- Query : reader + resampler + adjust (split).
+- Query : reader + resampler + adjust (splits stocks ; `--adjust` = dividends stocks / Panama futures).
+  `--end YYYY-MM-DD` = fin de journée inclusive (pas minuit). `--check-ticksize-accuracy` exit 1 si ERREUR.
 - CLI complète + chart serveur (dashboard `/` multi-type, miniatures SVG 1day, charts `/{type}:{symbol}`). Couleurs conf : `[chart] candle_up/down` ; overlay `[chart.overlay] overlay_dir` + `[chart.overlay.backtest]` (tx/order buy/sell hex). Rétrocompat `[chart] overlay_dir`. API `/api/overlays`, `/api/overlay/{stem}`.
 - Chart timezone : `[chart] timezone` (IANA, défaut UTC) — affichage axe/tooltip + `intraday_begin/end` en heures murales de cette TZ.
 - **`myquantstore serve`** : API HTTP `query()` (`/v1/health`, `/v1/instruments`, `/v1/query`) — Parquet / Arrow, pas de cascade, pas d'auth v1. Spec : `docs/TODO_SERVE.md`.
@@ -90,9 +93,11 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
 - **`myquantstore doctor`** : checks Python/config/dirs/clé/binary/schedule ; exit 1 si bloquant.
 - **`setup-key --api-key KEY --yes`** : non-interactif.
 - **`myquantstore schedule`** (backends `systemd` user timer + `cron`) :
-  - `schedule run` = **fetch → aggregate → status --check** (aggregate pour régénérer le cache parquet consommé en externe).
-  - Défaut horaires : samedi 01:00 (`OnCalendar=Sat *-*-* 01:00:00` / cron `0 1 * * 6`).
-  - `install|uninstall|status|show` ; `--backend auto|systemd|cron` ; `--fetch-args`.
+  - Deux jobs indépendants (`schedule <verbe> [fetch|caches]`, sans job = **fetch**) :
+    - **fetch** : `schedule run` = **fetch → aggregate → status --check** (aggregate pour régénérer le cache parquet consommé en externe). Défaut samedi 07:00 (`OnCalendar=Sat *-*-* 07:00:00` / cron `0 7 * * 6`). Units `myquantstore-fetch.*` ; cron `# BEGIN MYQUANTSTORE`.
+    - **caches** : `schedule run caches` = **tickers refresh --markets all --force** puis **futures contracts --refresh**. Défaut samedi 03:00 (`OnCalendar=Sat *-*-* 03:00:00` / cron `0 3 * * 6`). Units `myquantstore-caches.*` ; cron `# BEGIN MYQUANTSTORE-CACHES`.
+  - `install|uninstall|status|show` ; `--backend auto|systemd|cron` ; `--fetch-args` (job fetch only).
+  - `status` affiche les deux jobs ; `uninstall` sans job = les deux.
   - Templates manuels : `contrib/systemd/`, `contrib/cron/`.
   - Pas de daemon Python long-running.
 
@@ -123,7 +128,7 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
 
 ### Documentation
 - https://massive.com/docs/llms.txt
-- README.md, docs/TECHNICAL_DESIGN.md, docs/MULTI_TYPE.md, docs/PORTFOLIO.md
+- README.md, docs/TECHNICAL_DESIGN.md, docs/MULTI_TYPE.md, docs/PORTFOLIO.md, docs/IMPROVEMENTS.md
 - **`myquantstore serve` est implémenté** (API query réseau, pas le chart) : `docs/TODO_SERVE.md` (hors v1 encore ouvert). Backtest hebdo = snapshot Parquet, pas cette API.
 - **`--adjust` est implémenté** (futures back-adjusted rollover + stocks dividends après splits). Ne pas le documenter comme stub/NotImplemented.
 - Maintenir AGENTS.md à jour (ce fichier est la source de vérité pour les consignes de dev).
