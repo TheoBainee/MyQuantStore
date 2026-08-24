@@ -707,14 +707,17 @@ def _build_parser() -> argparse.ArgumentParser:
             "  --adjust ajoute l'ajustement dividendes.\n"
             "Futures: --adjust = back-adjust rollover; --normalize-tick-size.\n"
             "  Dédup timestamps ON par défaut (--no-dedup-timestamps pour\n"
-            "  garder les deux contrats au même window_start le jour de roll)."
+            "  garder les deux contrats au même window_start le jour de roll).\n"
+            "  --forward-fill : réinsère les barres manquantes (opt-in, OFF\n"
+            "  par défaut) avec OHLC = dernier close (intra-session / weekdays)."
         ),
         epilog=(
             "Exemples:\n"
             "  myquantstore query ES --start 2025-01-01 --timescale-unit min --timescale-nb 5\n"
             "  myquantstore query AAPL --timescale-unit day --adjust\n"
             "  myquantstore query AAPL --no-split --output /tmp/aapl.parquet\n"
-            "  myquantstore query EURUSD --type forex --intraday-begin 08:00 --intraday-end 17:00"
+            "  myquantstore query EURUSD --type forex --intraday-begin 08:00 --intraday-end 17:00\n"
+            "  myquantstore query NQ --forward-fill"
         ),
     )
     p_query.add_argument(
@@ -780,6 +783,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Futures 1min: conserve deux barres au même window_start au roll "
             "(désactive la dédup ON par défaut ; le contrat le plus récent gagne)"
+        ),
+    )
+    p_query.add_argument(
+        "--forward-fill",
+        action="store_true",
+        help=(
+            "Réinsère les barres manquantes après resample (opt-in, OFF par défaut) : "
+            "OHLC = dernier close, volume = 0. Intra-session (1min) / jours ouvrés (1day). "
+            "Pas de fill overnight ni week-end."
         ),
     )
     p_query.add_argument(
@@ -980,6 +992,8 @@ def _build_parser() -> argparse.ArgumentParser:
             "  curl -o aapl_raw.parquet 'http://127.0.0.1:8741/v1/query?instrument=AAPL&no_split=true'\n"
             "  # roll : garder les deux contrats au même timestamp\n"
             "  curl -o es_both.parquet 'http://127.0.0.1:8741/v1/query?instrument=ES&dedup_timestamps=false'\n"
+            "  # trous : OHLC = dernier close (opt-in)\n"
+            "  curl -o nq_ff.parquet 'http://127.0.0.1:8741/v1/query?instrument=NQ&forward_fill=true'\n"
             "  # colonnes uniquement (erreur 400 si un nom est inconnu)\n"
             "  curl -o es.parquet 'http://127.0.0.1:8741/v1/query?instrument=ES&include_cols=window_start,open,high,low,close'\n"
             "  # Arrow IPC au lieu de Parquet\n"
@@ -2083,6 +2097,7 @@ def _cmd_query(settings: Settings, args: argparse.Namespace) -> int:
             dedup_timestamps=not args.no_dedup_timestamps,
             include_cols=_parse_include_cols(getattr(args, "include_cols", None)),
             timezone=getattr(args, "timezone", None) or settings.chart_timezone or "UTC",
+            forward_fill=args.forward_fill,
         )
     except ValueError as e:
         console.print(f"[red]Erreur:[/red] {e}")

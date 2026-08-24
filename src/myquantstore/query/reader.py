@@ -22,6 +22,9 @@ sont disponibles :
   conformité des prix au tick size (read-only). Futures uniquement.
 - ``include_cols`` (``--include-cols``) : restreint les colonnes renvoyées.
   Toute colonne absente lève ``ValueError``.
+- ``forward_fill`` (``--forward-fill``) : opt-in, **OFF par défaut**. Après
+  resample, réinsère les barres manquantes (intra-session / jours ouvrés)
+  avec OHLC = dernier close. Voir :func:`myquantstore.query.resampler.forward_fill_ohlcv`.
 
 **Multi-type** : ``chain`` est optionnel (:class:`myquantstore.chains.InstrumentChain`).
 Pour forex/stocks/indices, on peut passer ``chain=None`` ou une
@@ -61,7 +64,12 @@ from myquantstore.query.adjust import (
     apply_rollover_adjustment,
     apply_split_adjustment,
 )
-from myquantstore.query.resampler import filter_intraday, resample_extraday, resample_ohlcv
+from myquantstore.query.resampler import (
+    filter_intraday,
+    forward_fill_ohlcv,
+    resample_extraday,
+    resample_ohlcv,
+)
 from myquantstore.storage.aggregate_cache import read_aggregate
 
 logger = get_logger("query")
@@ -111,6 +119,7 @@ def query(
     week_aligned: bool = False,
     dedup_timestamps: bool = True,
     include_cols: list[str] | None = None,
+    forward_fill: bool = False,
 ) -> pl.DataFrame:
     """Interroge l'historique continu d'un instrument.
 
@@ -144,8 +153,11 @@ def query(
         gagne. False = conserver les deux tickers (contrat de l'agrégat).
     :param include_cols: Si fourni, ne conserve que ces colonnes (ordre conservé).
         Toute colonne absente lève ``ValueError``.
+    :param forward_fill: Si True, réinsère les barres manquantes après
+        resample (intra-session / jours ouvrés) avec OHLC = dernier close.
+        **OFF par défaut** — ``query()`` n'invente pas de données.
     :return: DataFrame Polars de l'historique (filtré, éventuellement ajusté,
-        dédupliqué, resamplé et normalisé).
+        dédupliqué, resamplé, forward-fillé et normalisé).
     """
     res = resolution or DEFAULT_RESOLUTION
     is_extraday = res == RESOLUTION_1DAY or timeframe_family(res) == TF_FAMILY_EXTRADAY
@@ -159,11 +171,7 @@ def query(
         )
 
     # --- Validation intraday ---
-    if (
-        intraday_begin is not None
-        and intraday_end is not None
-        and intraday_begin == intraday_end
-    ):
+    if intraday_begin is not None and intraday_end is not None and intraday_begin == intraday_end:
         raise ValueError(
             "intraday_begin et intraday_end doivent être différents. "
             "Pour ne pas filtrer, omettez les deux paramètres."
@@ -191,7 +199,9 @@ def query(
     # --- Filtrage temporel (start/end datetime) ---
     # On strip la timezone des deux côtés (colonne + paramètre) pour comparer naive vs naive.
     if start is not None:
-        start_naive = start.astimezone(UTC).replace(tzinfo=None) if start.tzinfo is not None else start
+        start_naive = (
+            start.astimezone(UTC).replace(tzinfo=None) if start.tzinfo is not None else start
+        )
         df = df.filter(pl.col("window_start").dt.replace_time_zone(None) >= start_naive)
     if end is not None:
         end_naive = end.astimezone(UTC).replace(tzinfo=None) if end.tzinfo is not None else end
@@ -242,8 +252,17 @@ def query(
         if k_days > 1:
             df = resample_extraday(df, k_days, week_aligned=week_aligned)
     elif k_minutes > 1:
-        df = resample_ohlcv(
-            df, k_minutes, intraday_begin, intraday_end, timezone=tz
+        df = resample_ohlcv(df, k_minutes, intraday_begin, intraday_end, timezone=tz)
+
+    # --- Forward-fill des barres manquantes (opt-in, après resample) ---
+    if forward_fill:
+        df = forward_fill_ohlcv(
+            df,
+            is_extraday=is_extraday,
+            k_minutes=k_minutes,
+            k_days=k_days,
+            week_aligned=week_aligned,
+            timezone=tz,
         )
 
     # --- Limit ---
@@ -279,14 +298,9 @@ def _dedup_timestamps(
     if segments and "ticker" in df.columns:
         rank = {seg.ticker: i for i, seg in enumerate(segments)}
         df = df.with_columns(
-            pl.col("ticker")
-            .cast(pl.Utf8)
-            .replace_strict(rank, default=-1)
-            .alias("_roll_rank")
+            pl.col("ticker").cast(pl.Utf8).replace_strict(rank, default=-1).alias("_roll_rank")
         )
-        df = df.sort(["window_start", "_roll_rank"]).unique(
-            subset=["window_start"], keep="last"
-        )
+        df = df.sort(["window_start", "_roll_rank"]).unique(subset=["window_start"], keep="last")
         return df.drop("_roll_rank").sort("window_start")
 
     return df.unique(subset=["window_start"], keep="last").sort("window_start")
@@ -428,9 +442,7 @@ def check_ticksize_accuracy_fn(
         for col in _PRICE_COLS:
             if col not in subset.columns:
                 continue
-            col_bad = (
-                (pl.col(col) / tick - (pl.col(col) / tick).round()).abs() > trigger * tick
-            )
+            col_bad = (pl.col(col) / tick - (pl.col(col) / tick).round()).abs() > trigger * tick
             bad_mask = bad_mask | col_bad
 
         nb_bad = subset.filter(bad_mask).height
@@ -485,7 +497,9 @@ def _print_quality_bilan(label: str, bilan: pl.DataFrame) -> None:
 
         if statut == "OK":
             statut_str = f"[green]{statut}[/green]"
-            logger.info(f"Qualité tick_size {ticker}: {bad}/{candles} non conformes ({ratio:.4%}) — OK")
+            logger.info(
+                f"Qualité tick_size {ticker}: {bad}/{candles} non conformes ({ratio:.4%}) — OK"
+            )
         elif statut == "ATTENTION":
             statut_str = f"[yellow]{statut}[/yellow]"
             logger.warning(

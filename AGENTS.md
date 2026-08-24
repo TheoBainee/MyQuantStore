@@ -83,6 +83,7 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
 - Agrégateur générique (polars unique + casts).
 - Query : reader + resampler + adjust (splits stocks ; `--adjust` = dividends stocks / Panama futures).
   `--end YYYY-MM-DD` = fin de journée inclusive (pas minuit). `--check-ticksize-accuracy` exit 1 si ERREUR.
+  `--forward-fill` / `query(..., forward_fill=True)` / serve `?forward_fill=true` : opt-in, après resample.
 - CLI complète + chart serveur (dashboard `/` multi-type, miniatures SVG 1day, charts `/{type}:{symbol}`). Couleurs conf : `[chart] candle_up/down` ; overlay `[chart.overlay] overlay_dir` + `[chart.overlay.backtest]` (tx/order buy/sell hex). Rétrocompat `[chart] overlay_dir`. API `/api/overlays`, `/api/overlay/{stem}`.
 - Chart timezone : `[chart] timezone` (IANA, défaut UTC) — affichage axe/tooltip + `intraday_begin/end` en heures murales de cette TZ.
 - **`myquantstore serve`** : API HTTP `query()` (`/v1/health`, `/v1/instruments`, `/v1/query`) — Parquet / Arrow, pas de cascade, pas d'auth v1. Spec : `docs/SERVE.md`.
@@ -146,3 +147,4 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
 - Toujours utiliser des messages de commit clairs décrivant les changements + référence à l'agent.
 
 Commence/maintiens par : arborescence propre, pyproject.toml (uv/hatch), config (pydantic+toml), implémentation pipeline + fetchers + storage, tests.
+nce propre, pyproject.toml (uv/hatch), config (pydantic+toml), implémentation pipeline + fetchers + storage, tests.

@@ -17,7 +17,7 @@ from datetime import date, datetime, time
 import polars as pl
 import pytest
 
-from myquantstore.query.resampler import filter_intraday, resample_ohlcv
+from myquantstore.query.resampler import filter_intraday, forward_fill_ohlcv, resample_ohlcv
 
 
 def _make_session_df(
@@ -260,9 +260,7 @@ class TestFilterIntradayTimezone:
             datetime(2024, 7, 15, 21, 30),  # 16:30 CDT → exclu
         ]
         df = _make_session_df(date(2024, 7, 15), starts)
-        result = filter_intraday(
-            df, time(9, 30), time(16, 0), timezone="America/Chicago"
-        )
+        result = filter_intraday(df, time(9, 30), time(16, 0), timezone="America/Chicago")
         kept = result["window_start"].to_list()
         assert len(kept) == 2
         assert datetime(2024, 7, 15, 14, 30) in kept
@@ -283,7 +281,9 @@ class TestIntradayCoherence:
 
         df = pl.concat([df_a, df_b])
         df = filter_intraday(df, time(9, 30), time(16, 0))
-        result = resample_ohlcv(df, k_minutes=7, intraday_begin=time(9, 30), intraday_end=time(16, 0))
+        result = resample_ohlcv(
+            df, k_minutes=7, intraday_begin=time(9, 30), intraday_end=time(16, 0)
+        )
 
         buckets_a = (
             result.filter(pl.col("session_end_date") == date(2026, 7, 10))
@@ -316,7 +316,9 @@ class TestIntradayDropPartial:
         df = _make_session_df(date(2026, 7, 10), starts)
 
         df = filter_intraday(df, time(9, 30), time(9, 39))
-        result = resample_ohlcv(df, k_minutes=7, intraday_begin=time(9, 30), intraday_end=time(9, 39))
+        result = resample_ohlcv(
+            df, k_minutes=7, intraday_begin=time(9, 30), intraday_end=time(9, 39)
+        )
 
         # 10 candles k=7 → 1 bucket (09:30-09:36), 09:37 droppé (09:37+7=09:44 > 09:39)
         assert result.height == 1
@@ -343,7 +345,9 @@ class TestWraparoundCoherence:
 
         df = pl.concat([df_a, df_b])
         df = filter_intraday(df, time(20, 0), time(4, 0))
-        result = resample_ohlcv(df, k_minutes=7, intraday_begin=time(20, 0), intraday_end=time(4, 0))
+        result = resample_ohlcv(
+            df, k_minutes=7, intraday_begin=time(20, 0), intraday_end=time(4, 0)
+        )
 
         # Les buckets doivent être cohérents entre les 2 sessions
         buckets_a = (
@@ -367,3 +371,117 @@ class TestWraparoundCoherence:
         # 03:55-03:59 (5 candles) → 1 bucket (03:53-03:59) car 03:53 = 20:00 + (7h53 // 7 * 7)
         # Vérifier qu'on a au moins 1 bucket à 20:00
         assert time(20, 0) in buckets_a
+
+
+class TestForwardFillIntraday:
+    """Réinsertion des barres manquantes intra-session (opt-in)."""
+
+    def test_fills_gap_with_last_close(self):
+        """09:30, 09:32 (trou 09:31) → 3 barres, 09:31 = last close, volume 0."""
+        starts = [
+            datetime(2026, 7, 10, 9, 30),
+            datetime(2026, 7, 10, 9, 32),
+        ]
+        df = _make_session_df(
+            date(2026, 7, 10),
+            starts,
+            opens=[100.0, 110.0],
+            volumes=[50, 80],
+        )
+        out = forward_fill_ohlcv(df, is_extraday=False, k_minutes=1)
+        assert out.height == 3
+        row = out.filter(pl.col("window_start") == datetime(2026, 7, 10, 9, 31)).row(0, named=True)
+        last_close = 100.0 + 0.5  # _make_session_df : close = open + 0.5
+        assert row["open"] == last_close
+        assert row["high"] == last_close
+        assert row["low"] == last_close
+        assert row["close"] == last_close
+        assert row["volume"] == 0
+        assert row["transactions"] == 0
+        assert row["dollar_volume"] == 0
+        assert row["candle_count"] == 0
+        assert row["ticker"] == "TEST"
+
+    def test_does_not_fill_across_sessions(self):
+        """Deux sessions (ven / lun) : pas de barres overnight / week-end."""
+        df_a = _make_session_df(
+            date(2026, 7, 10),
+            [datetime(2026, 7, 10, 16, 0)],
+            opens=[100.0],
+        )
+        df_b = _make_session_df(
+            date(2026, 7, 13),
+            [datetime(2026, 7, 13, 9, 30)],
+            opens=[110.0],
+        )
+        df = pl.concat([df_a, df_b])
+        out = forward_fill_ohlcv(df, is_extraday=False, k_minutes=1)
+        assert out.height == 2
+
+    def test_preserves_real_bars(self):
+        starts = [datetime(2026, 7, 10, 9, 30 + i) for i in range(3)]
+        df = _make_session_df(date(2026, 7, 10), starts, opens=[1.0, 2.0, 3.0])
+        out = forward_fill_ohlcv(df, is_extraday=False, k_minutes=1)
+        assert out.height == 3
+        assert out["open"].to_list() == [1.0, 2.0, 3.0]
+        assert out["volume"].to_list() == [100, 100, 100]
+
+
+class TestForwardFillExtraday:
+    """Réinsertion des jours ouvrés manquants (opt-in)."""
+
+    def test_fills_weekday_holiday_not_weekend(self):
+        """Lun + mer : fill mardi, pas samedi/dimanche jusqu'au mercredi."""
+        rows = []
+        for d, price in ((date(2024, 1, 1), 100.0), (date(2024, 1, 3), 102.0)):
+            # 2024-01-01 = lundi, 2024-01-03 = mercredi
+            rows.append(
+                {
+                    "window_start": datetime(d.year, d.month, d.day),
+                    "session_end_date": d,
+                    "ticker": "AAPL",
+                    "open": price,
+                    "high": price + 1,
+                    "low": price - 1,
+                    "close": price + 0.5,
+                    "volume": 1000,
+                    "transactions": 10,
+                    "dollar_volume": 100.0,
+                }
+            )
+        df = pl.DataFrame(rows).with_columns(pl.col("window_start").cast(pl.Datetime("ns")))
+        out = forward_fill_ohlcv(df, is_extraday=True, k_days=1)
+        dates = [t.date() for t in out["window_start"].to_list()]
+        assert date(2024, 1, 1) in dates
+        assert date(2024, 1, 2) in dates  # mardi
+        assert date(2024, 1, 3) in dates
+        assert date(2024, 1, 6) not in dates  # samedi hors plage
+        tue = out.filter(pl.col("window_start").dt.date() == date(2024, 1, 2)).row(0, named=True)
+        assert tue["close"] == 100.5
+        assert tue["open"] == 100.5
+        assert tue["volume"] == 0
+        assert tue["candle_count"] == 0
+
+    def test_does_not_invent_weekend(self):
+        """Vendredi + lundi : pas de samedi / dimanche."""
+        rows = []
+        for d, price in ((date(2024, 1, 5), 10.0), (date(2024, 1, 8), 12.0)):
+            # ven 5 jan 2024, lun 8 jan 2024
+            rows.append(
+                {
+                    "window_start": datetime(d.year, d.month, d.day),
+                    "session_end_date": d,
+                    "ticker": "AAPL",
+                    "open": price,
+                    "high": price + 1,
+                    "low": price - 1,
+                    "close": price + 0.5,
+                    "volume": 100,
+                }
+            )
+        df = pl.DataFrame(rows).with_columns(pl.col("window_start").cast(pl.Datetime("ns")))
+        out = forward_fill_ohlcv(df, is_extraday=True, k_days=1)
+        dates = {t.date() for t in out["window_start"].to_list()}
+        assert date(2024, 1, 6) not in dates
+        assert date(2024, 1, 7) not in dates
+        assert dates == {date(2024, 1, 5), date(2024, 1, 8)}

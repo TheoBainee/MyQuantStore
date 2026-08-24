@@ -336,7 +336,7 @@ curl 'http://127.0.0.1:8741/v1/health?instrument=futures:ES'
 curl 'http://127.0.0.1:8741/v1/instruments'
 ```
 
-- `GET /v1/query` : mêmes params que `query` (`instrument` requis, `type`, `start`/`end`, `timescale_unit`/`timescale_nb`, `adjust`, `no_split`, `dedup_timestamps` défaut true, `intraday_*`, `normalize_tick_size=true|false`, `include_cols=col1,col2`). Réponse Parquet ; `Accept: application/vnd.apache.arrow.stream` → Arrow IPC. Une colonne inconnue → 400.
+- `GET /v1/query` : mêmes params que `query` (`instrument` requis, `type`, `start`/`end`, `timescale_unit`/`timescale_nb`, `adjust`, `no_split`, `dedup_timestamps` défaut true, `forward_fill` défaut false, `intraday_*`, `normalize_tick_size=true|false`, `include_cols=col1,col2`). Réponse Parquet ; `Accept: application/vnd.apache.arrow.stream` → Arrow IPC. Une colonne inconnue → 400.
 - `GET /v1/health` : 200 OK / **503** si STALE ou agrégé manquant. Un client sérieux appelle health d'abord ; `/v1/query` sert quand même les données STALE.
 - `GET /v1/instruments` : liste + pour les futures `trade_tick_size`, `tickers` de l'agrégé, `current_ticker`, `last_trade_date`, `days_to_maturity` (cache local, pas d'appel API).
 - Booléens HTTP : `true`/`false` (ex: `normalize_tick_size=true`). Un flag nu ne marche pas.
@@ -428,6 +428,13 @@ Après quoi `myquantstore fe<Tab>` complète automatiquement en `myquantstore fe
 ## Confidentialité et sécurité
 
 > **Rappel MassiVe Terms of Service** : le code source de ce projet est libre (MIT), mais les Market Data récupérées via l'API Massive.com sont soumises aux [Market Data Terms](https://massive.com/legal/market-data-terms-of-service) et ne peuvent être redistribuées. Ce dépôt ne sert qu'à partager l'outil de collecte, pas les données elles-mêmes.
+
+## Licence
+
+Le code de MyQuantStore est sous licence **MIT** (voir [LICENSE](./LICENSE)).
+
+La librairie [TradingView Lightweight Charts](https://www.tradingview.com/lightweight-charts/) utilisée par la commande `myquantstore chart` est sous licence **Apache 2.0** (voir [src/myquantstore/chart/NOTICE](./src/myquantstore/chart/NOTICE) et [LICENSE-2.0.txt](./src/myquantstore/chart/LICENSE-2.0.txt)).
+ être redistribuées. Ce dépôt ne sert qu'à partager l'outil de collecte, pas les données elles-mêmes.
 
 ## Licence
 

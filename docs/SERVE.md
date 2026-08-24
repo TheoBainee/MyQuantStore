@@ -107,6 +107,7 @@ Alignés sur `query()` / la CLI :
 | `adjust` | false | Futures Panama / stocks dividends |
 | `no_split` | false | Stocks bruts |
 | `dedup_timestamps` | **true** | false = deux tickers au roll |
+| `forward_fill` | **false** | true = réinsère les barres manquantes (OHLC = last close). Intra-session / weekdays. |
 | `intraday_begin` / `intraday_end` | None | `HH:MM`, les deux ou aucun |
 | `normalize_tick_size` | false | Incompatible avec `adjust` → 400. HTTP : `true`/`false`. |
 | `include_cols` | None | CSV de colonnes. Toute colonne absente → 400. |

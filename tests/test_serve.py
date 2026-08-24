@@ -388,9 +388,11 @@ class TestServeCli:
         text = serve.format_help()
         assert "normalize_tick_size=true" in text
         assert "include_cols=" in text
+        assert "forward_fill=true" in text
         assert "true/false" in text
         assert "/v1/query" in text
         assert "/v1/instruments" in text
+
 
 class TestServeQueryExtras:
     def test_include_cols_filters(self, tmp_settings, es_instrument, sample_contracts_df):
@@ -441,6 +443,36 @@ class TestServeQueryExtras:
         assert df.schema["open"] == pl.Int32
         assert df["open"][0] == 18000  # 4500 / 0.25
 
+    def test_forward_fill_true_inserts_gap(self, tmp_settings, es_instrument, sample_contracts_df):
+        from datetime import UTC, datetime
+
+        ts = [
+            datetime(2025, 6, 1, 9, 30, 0, tzinfo=UTC),
+            datetime(2025, 6, 1, 9, 32, 0, tzinfo=UTC),
+        ]
+        _seed_1min(
+            es_instrument,
+            tmp_settings,
+            ticker="ESM5",
+            timestamps=ts,
+            prices=[4500.0, 4502.0],
+        )
+        _write_contracts_cache(tmp_settings, sample_contracts_df)
+        app = create_serve_app(tmp_settings)
+        client = TestClient(app)
+        off = client.get("/v1/query", params={"instrument": "ES"})
+        assert off.status_code == 200
+        assert pl.read_parquet(BytesIO(off.content)).height == 2
+        on = client.get(
+            "/v1/query",
+            params={"instrument": "ES", "forward_fill": "true"},
+        )
+        assert on.status_code == 200
+        df = pl.read_parquet(BytesIO(on.content))
+        assert df.height == 3
+        assert "candle_count" in df.columns
+        assert 0 in df["candle_count"].to_list()
+
 
 class TestServeInstrumentsFutures:
     def test_futures_extras_from_local_cache(
@@ -463,4 +495,3 @@ class TestServeInstrumentsFutures:
         assert es["current_ticker"] is not None
         assert es["last_trade_date"] is not None
         assert isinstance(es["days_to_maturity"], int)
-

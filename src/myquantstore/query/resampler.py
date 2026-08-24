@@ -1,12 +1,14 @@
 """Rééchantillonnage et filtrage intraday des candles OHLCV.
 
-Ce module fournit deux fonctions utilisées par la commande ``query`` :
+Ce module fournit les fonctions utilisées par la commande ``query`` :
 
 - :func:`filter_intraday` : filtre les candles par heure du jour (supporte
   le wrap-around, ex: 20:00-04:00 pour les sessions overnight).
 - :func:`resample_ohlcv` : rééchantillonne des candles 1min en candles k-min
   (ex: 7min, 15min, 60min) avec une grille **ancrée au début de la session**
   pour garantir la cohérence entre jours.
+- :func:`forward_fill_ohlcv` : opt-in — réinsère les barres manquantes
+  (intra-session / jours ouvrés) avec OHLC = dernier close.
 
 **Problème de cohérence** : ``group_by_dynamic`` de Polars ancre la grille à
 l'epoch (1970-01-01), pas au début de la session. Résultat : les buckets
@@ -38,12 +40,14 @@ session, puis de bucketer relativement à cette ancre.
 
 **Gaps intra-session** : si des candles 1min manquent dans un bucket (pas de
 trades), le bucket est **conservé** avec ``candle_count < k``. C'est un
-comportement naturel du ``group_by`` — on n'invente pas de données.
+comportement naturel du ``group_by`` — on n'invente pas de données. Le
+forward-fill (barres absentes réinsérées) est un autre passage, opt-in,
+voir :func:`forward_fill_ohlcv`.
 """
 
 from __future__ import annotations
 
-from datetime import date, time, timedelta
+from datetime import date, datetime, time, timedelta
 
 import polars as pl
 
@@ -156,9 +160,7 @@ def filter_intraday(
         mask = (local_t >= intraday_begin) | (local_t <= intraday_end)
         mode = "wrap-around"
 
-    logger.debug(
-        f"Filtrage intraday ({mode}): {intraday_begin} - {intraday_end} tz={tz}"
-    )
+    logger.debug(f"Filtrage intraday ({mode}): {intraday_begin} - {intraday_end} tz={tz}")
     return df.filter(mask)
 
 
@@ -211,18 +213,20 @@ def resample_ohlcv(
         # Wrap-around (begin > end) : session commence la veille
         sed = pl.col("session_end_date")
         if intraday_begin > intraday_end:
-            anchor_expr = _wall_clock_on_date_naive_utc(
-                sed, intraday_begin, tz, day_offset=-1
-            )
+            anchor_expr = _wall_clock_on_date_naive_utc(sed, intraday_begin, tz, day_offset=-1)
             session_end_expr = _wall_clock_on_date_naive_utc(sed, intraday_end, tz)
         else:
             anchor_expr = _wall_clock_on_date_naive_utc(sed, intraday_begin, tz)
             session_end_expr = _wall_clock_on_date_naive_utc(sed, intraday_end, tz)
 
         # Joindre l'ancre et la fin de session par session_end_date
-        anchors = df.select("session_end_date").unique().with_columns(
-            anchor_expr.alias("anchor"),
-            session_end_expr.alias("session_end"),
+        anchors = (
+            df.select("session_end_date")
+            .unique()
+            .with_columns(
+                anchor_expr.alias("anchor"),
+                session_end_expr.alias("session_end"),
+            )
         )
         df = df.join(anchors, on="session_end_date")
     else:
@@ -241,7 +245,9 @@ def resample_ohlcv(
         .alias("bucket_id")
     )
     df = df.with_columns(
-        (pl.col("anchor") + pl.duration(minutes=k_minutes) * pl.col("bucket_id")).alias("window_start")
+        (pl.col("anchor") + pl.duration(minutes=k_minutes) * pl.col("bucket_id")).alias(
+            "window_start"
+        )
     )
 
     # --- 3. Agréger par (session_end_date, window_start) ---
@@ -272,7 +278,9 @@ def resample_ohlcv(
     # --- 4. Drop des partiels de fin de session ---
     # Un bucket est partiel si window_start + k > session_end
     before_drop = agg.height
-    agg = agg.filter(pl.col("window_start") + pl.duration(minutes=k_minutes) <= pl.col("session_end"))
+    agg = agg.filter(
+        pl.col("window_start") + pl.duration(minutes=k_minutes) <= pl.col("session_end")
+    )
     dropped = before_drop - agg.height
     if dropped > 0:
         logger.info(f"Drop de {dropped} bucket(s) partiel(s) de fin de session")
@@ -331,9 +339,7 @@ def resample_extraday(
         return df
 
     if week_aligned and k_days % 7 != 0:
-        raise ValueError(
-            f"week_aligned requiert k_days multiple de 7 (reçu: {k_days})"
-        )
+        raise ValueError(f"week_aligned requiert k_days multiple de 7 (reçu: {k_days})")
 
     label = f"{k_days // 7}week" if week_aligned else f"{k_days}day"
     logger.info(f"Resampling extraday 1day -> {label}")
@@ -415,3 +421,187 @@ def resample_extraday(
 
     logger.info(f"Resampling extraday terminé: {agg.height} buckets {label}")
     return agg
+
+
+_ZERO_FILL_COLS = ("volume", "transactions", "dollar_volume")
+_LAST_KNOWN_COLS = ("ticker", "settlement_price")
+
+
+def forward_fill_ohlcv(
+    df: pl.DataFrame,
+    *,
+    is_extraday: bool,
+    k_minutes: int = 1,
+    k_days: int = 1,
+    week_aligned: bool = False,
+    timezone: str = "UTC",
+) -> pl.DataFrame:
+    """Réinsère les barres manquantes avec OHLC = dernier close connu.
+
+    Opt-in uniquement (``query(..., forward_fill=True)``). Par défaut
+    ``query()`` / le resample **n'inventent pas** de données.
+
+    **Périmètre**
+
+    - Intraday (track ``1min``) : grille de pas ``k_minutes`` **à
+      l'intérieur de chaque session** (premier → dernier ``window_start``
+      observé de la session). Pas de fill overnight / week-end.
+    - Extraday (track ``1day``) : jours **ouvrés** (lun–ven) entre le
+      premier et le dernier ``window_start``. Pas de samedi / dimanche.
+      ``k_days > 1`` : pas calendaire de ``k_days`` jours (lundi ISO si
+      ``week_aligned``). Les barres réelles hors grille (week-end) sont
+      conservées.
+
+    **Barres synthétiques** : ``open = high = low = close = last_close``,
+    ``volume`` / ``transactions`` / ``dollar_volume`` = 0,
+    ``candle_count`` = 0. ``ticker`` / ``settlement_price`` = dernière
+    valeur connue. Les barres réelles sont inchangées.
+
+    :param df: Série déjà filtrée / resamplée (colonne ``window_start``).
+    :param is_extraday: Track ``1day`` (True) vs ``1min`` (False).
+    :param k_minutes: Pas de grille intraday (doit matcher le resample).
+    :param k_days: Pas de grille extraday.
+    :param week_aligned: Ancrage lundi ISO (UT ``week``).
+    :param timezone: Inutilisé (grille en naive UTC, comme le resample).
+    """
+    _ = timezone
+    if df.is_empty() or "window_start" not in df.columns:
+        return df
+    if is_extraday:
+        if k_days < 1:
+            raise ValueError(f"k_days doit être >= 1 (reçu: {k_days})")
+        if week_aligned and k_days % 7 != 0:
+            raise ValueError(f"week_aligned requiert k_days multiple de 7 (reçu: {k_days})")
+        return _forward_fill_extraday(df, k_days=k_days, week_aligned=week_aligned)
+    if k_minutes < 1:
+        raise ValueError(f"k_minutes doit être >= 1 (reçu: {k_minutes})")
+    return _forward_fill_intraday(df, k_minutes=k_minutes)
+
+
+def _eager_range(start: datetime, end: datetime, interval: str) -> pl.Series:
+    """Série ``window_start`` Datetime[ns] de ``start`` à ``end`` inclus."""
+    return pl.datetime_range(start, end, interval=interval, eager=True, time_unit="ns")
+
+
+def _forward_fill_intraday(df: pl.DataFrame, *, k_minutes: int) -> pl.DataFrame:
+    """Grille intra-session : min(window_start) → max(window_start) par session."""
+    work, orig_ws_tz = _as_naive_utc_window(df)
+    if "session_end_date" not in work.columns:
+        work = work.with_columns(pl.col("window_start").dt.date().alias("session_end_date"))
+
+    sessions = work.group_by("session_end_date").agg(
+        pl.col("window_start").min().alias("_grid_start"),
+        pl.col("window_start").max().alias("_grid_end"),
+    )
+    grids: list[pl.DataFrame] = []
+    for row in sessions.iter_rows(named=True):
+        start = row["_grid_start"]
+        end = row["_grid_end"]
+        if start is None or end is None:
+            continue
+        stamps = _eager_range(start, end, f"{k_minutes}m")
+        grids.append(
+            pl.DataFrame(
+                {
+                    "window_start": stamps,
+                    "session_end_date": [row["session_end_date"]] * len(stamps),
+                }
+            )
+        )
+    if not grids:
+        return df
+
+    grid = pl.concat(grids)
+    filled = _join_and_fill(work, grid)
+    return _restore_window_tz(filled, orig_ws_tz)
+
+
+def _forward_fill_extraday(
+    df: pl.DataFrame,
+    *,
+    k_days: int,
+    week_aligned: bool,
+) -> pl.DataFrame:
+    """Grille jours ouvrés (k=1) ou pas calendaire k_days (week_aligned = lundi ISO)."""
+    work = df.sort("window_start")
+    first = work["window_start"].min()
+    last = work["window_start"].max()
+    if first is None or last is None:
+        return df
+
+    if k_days == 1 and not week_aligned:
+        stamps = _eager_range(first, last, "1d")
+        cal = pl.DataFrame({"window_start": stamps}).filter(
+            pl.col("window_start").dt.weekday() <= 5
+        )
+    else:
+        if week_aligned:
+            first_date = first.date() if isinstance(first, datetime) else first
+            monday = first_date - timedelta(days=first_date.weekday())
+            start = datetime(monday.year, monday.month, monday.day)
+        else:
+            start = first
+        stamps = _eager_range(start, last, f"{k_days}d")
+        cal = pl.DataFrame({"window_start": stamps}).filter(pl.col("window_start") <= last)
+
+    if "session_end_date" in work.columns:
+        cal = cal.with_columns(pl.col("window_start").dt.date().alias("session_end_date"))
+    return _join_and_fill(work, cal)
+
+
+def _join_and_fill(observed: pl.DataFrame, grid: pl.DataFrame) -> pl.DataFrame:
+    """Union grille + barres réelles, puis ffill close → OHLC synthétique."""
+    join_keys = ["window_start"]
+    if "session_end_date" in observed.columns and "session_end_date" in grid.columns:
+        join_keys = ["session_end_date", "window_start"]
+
+    ws_dtype = observed.schema["window_start"]
+    if grid.schema.get("window_start") != ws_dtype:
+        grid = grid.with_columns(pl.col("window_start").cast(ws_dtype))
+
+    # Ne jamais dropper une barre réelle (ex: séance week-end déjà présente).
+    keys = pl.concat([grid.select(join_keys), observed.select(join_keys)]).unique()
+    out = keys.join(observed, on=join_keys, how="left").sort("window_start")
+    out = out.with_columns(pl.col("close").is_null().alias("_ffill_missing"))
+
+    fill_exprs: list[pl.Expr] = [pl.col("close").forward_fill().alias("close")]
+    for col in _LAST_KNOWN_COLS:
+        if col in out.columns:
+            fill_exprs.append(pl.col(col).forward_fill().alias(col))
+    out = out.with_columns(fill_exprs)
+
+    missing = pl.col("_ffill_missing")
+    last_close = pl.col("close")
+    synth: list[pl.Expr] = []
+    for col in ("open", "high", "low"):
+        if col in out.columns:
+            synth.append(pl.when(missing).then(last_close).otherwise(pl.col(col)).alias(col))
+    for col in _ZERO_FILL_COLS:
+        if col in out.columns:
+            zero = pl.lit(0)
+            dtype = out.schema[col]
+            if dtype is not None:
+                zero = zero.cast(dtype)
+            synth.append(pl.when(missing).then(zero).otherwise(pl.col(col)).alias(col))
+    if "candle_count" in out.columns:
+        synth.append(
+            pl.when(missing)
+            .then(pl.lit(0).cast(pl.Int32))
+            .otherwise(pl.col("candle_count"))
+            .alias("candle_count")
+        )
+    else:
+        synth.append(
+            pl.when(missing)
+            .then(pl.lit(0).cast(pl.Int32))
+            .otherwise(pl.lit(1).cast(pl.Int32))
+            .alias("candle_count")
+        )
+    out = out.with_columns(synth)
+
+    # Leading nulls (rien à ffill avant la 1ʳᵉ barre réelle) : drop.
+    n_filled = int(out.filter(pl.col("close").is_not_null() & missing).height)
+    out = out.filter(pl.col("close").is_not_null()).drop("_ffill_missing")
+    if n_filled > 0:
+        logger.info(f"Forward-fill : {n_filled} barre(s) synthétique(s) (OHLC = last close)")
+    return out.sort("window_start")

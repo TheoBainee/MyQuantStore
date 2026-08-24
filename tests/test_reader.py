@@ -17,7 +17,9 @@ from myquantstore.query.reader import (
 from myquantstore.storage.raw_dumps import save_raw_dump
 
 
-def _make_df(ticker: str, timestamps: list[datetime], prices: list[float], tick: float = 0.25) -> pl.DataFrame:
+def _make_df(
+    ticker: str, timestamps: list[datetime], prices: list[float], tick: float = 0.25
+) -> pl.DataFrame:
     """Crée un DataFrame de chandeliers avec prix multiples de tick."""
     return pl.DataFrame(
         {
@@ -54,12 +56,16 @@ def setup_aggregate(tmp_settings, es_instrument, sample_chain):
 class TestQuery:
     """Tests de la fonction query()."""
 
-    def test_query_returns_all_data(self, tmp_settings, es_instrument, sample_chain, setup_aggregate):
+    def test_query_returns_all_data(
+        self, tmp_settings, es_instrument, sample_chain, setup_aggregate
+    ):
         df = query(es_instrument, tmp_settings, sample_chain)
         assert df.height == 3
         assert "window_start" in df.columns
 
-    def test_query_with_start_filter(self, tmp_settings, es_instrument, sample_chain, setup_aggregate):
+    def test_query_with_start_filter(
+        self, tmp_settings, es_instrument, sample_chain, setup_aggregate
+    ):
         df = query(
             es_instrument,
             tmp_settings,
@@ -68,7 +74,9 @@ class TestQuery:
         )
         assert df.height == 2
 
-    def test_query_with_end_filter(self, tmp_settings, es_instrument, sample_chain, setup_aggregate):
+    def test_query_with_end_filter(
+        self, tmp_settings, es_instrument, sample_chain, setup_aggregate
+    ):
         df = query(
             es_instrument,
             tmp_settings,
@@ -81,14 +89,18 @@ class TestQuery:
         df = query(es_instrument, tmp_settings, sample_chain, limit=2)
         assert df.height == 2
 
-    def test_query_adjust_rollover_futures(self, tmp_settings, es_instrument, sample_chain, setup_aggregate):
+    def test_query_adjust_rollover_futures(
+        self, tmp_settings, es_instrument, sample_chain, setup_aggregate
+    ):
         """adjust_rollover=True pour futures applique le back-adjust (sans lever d'erreur)."""
         # Avec la chaîne fournie, ne doit plus lever
         df = query(es_instrument, tmp_settings, sample_chain, adjust_rollover=True)
         # Le df doit être retourné (facteurs 1.0 si pas de rollover dans le sample)
         assert df.height >= 0
 
-    def test_query_normalize_and_adjust_incompatible(self, tmp_settings, es_instrument, sample_chain, setup_aggregate):
+    def test_query_normalize_and_adjust_incompatible(
+        self, tmp_settings, es_instrument, sample_chain, setup_aggregate
+    ):
         with pytest.raises(ValueError, match="incompatibles"):
             query(
                 es_instrument,
@@ -98,14 +110,18 @@ class TestQuery:
                 normalize_tick_size=True,
             )
 
-    def test_query_no_split_noop_for_futures(self, tmp_settings, es_instrument, sample_chain, setup_aggregate):
+    def test_query_no_split_noop_for_futures(
+        self, tmp_settings, es_instrument, sample_chain, setup_aggregate
+    ):
         """--no-split est un no-op pour futures (pas de splits)."""
         df = query(es_instrument, tmp_settings, sample_chain, no_split=True)
         assert df.height == 3
         # Les prix sont inchangés (pas d'ajustement pour futures)
         assert df["open"][0] == 4500.00
 
-    def test_query_normalize_without_chain_raises(self, tmp_settings, es_instrument, setup_aggregate):
+    def test_query_normalize_without_chain_raises(
+        self, tmp_settings, es_instrument, setup_aggregate
+    ):
         """normalize_tick_size sans chain lève ValueError."""
         with pytest.raises(ValueError, match="chain"):
             query(es_instrument, tmp_settings, chain=None, normalize_tick_size=True)
@@ -156,9 +172,7 @@ class TestQuery:
         )
         aggregate(es_instrument, tmp_settings)
 
-        df = query(
-            es_instrument, tmp_settings, sample_chain, dedup_timestamps=False
-        )
+        df = query(es_instrument, tmp_settings, sample_chain, dedup_timestamps=False)
         assert df.height == 2
         assert set(df["ticker"].to_list()) == {"ESH5", "ESM5"}
 
@@ -184,11 +198,54 @@ class TestQuery:
                 include_cols=["window_start", "not_a_column"],
             )
 
+    def test_forward_fill_off_by_default_keeps_gap(self, tmp_settings, es_instrument, sample_chain):
+        ts = [
+            datetime(2025, 6, 1, 9, 30, 0, tzinfo=UTC),
+            datetime(2025, 6, 1, 9, 32, 0, tzinfo=UTC),
+        ]
+        save_raw_dump(
+            _make_df("ESM5", ts, [4500.00, 4502.50]),
+            es_instrument,
+            "ESM5",
+            "20250601T093000",
+            tmp_settings,
+        )
+        aggregate(es_instrument, tmp_settings)
+        df = query(es_instrument, tmp_settings, sample_chain)
+        assert df.height == 2
+
+    def test_forward_fill_inserts_missing_minute(self, tmp_settings, es_instrument, sample_chain):
+        ts = [
+            datetime(2025, 6, 1, 9, 30, 0, tzinfo=UTC),
+            datetime(2025, 6, 1, 9, 32, 0, tzinfo=UTC),
+        ]
+        save_raw_dump(
+            _make_df("ESM5", ts, [4500.00, 4502.50]),
+            es_instrument,
+            "ESM5",
+            "20250601T093000",
+            tmp_settings,
+        )
+        aggregate(es_instrument, tmp_settings)
+        df = query(es_instrument, tmp_settings, sample_chain, forward_fill=True)
+        assert df.height == 3
+        mid = df.filter(
+            pl.col("window_start").dt.replace_time_zone(None) == datetime(2025, 6, 1, 9, 31)
+        )
+        assert mid.height == 1
+        # close de 09:30 = price + tick = 4500.25
+        assert mid["close"][0] == 4500.25
+        assert mid["open"][0] == 4500.25
+        assert mid["volume"][0] == 0
+        assert mid["candle_count"][0] == 0
+
 
 class TestNormalizeTickSize:
     """Tests de la normalisation tick_size (--normalize-tick-size)."""
 
-    def test_normalize_converts_to_int32(self, tmp_settings, es_instrument, sample_chain, setup_aggregate):
+    def test_normalize_converts_to_int32(
+        self, tmp_settings, es_instrument, sample_chain, setup_aggregate
+    ):
         df = query(es_instrument, tmp_settings, sample_chain, normalize_tick_size=True)
 
         assert df.schema["open"] == pl.Int32
@@ -197,7 +254,9 @@ class TestNormalizeTickSize:
         assert df.schema["close"] == pl.Int32
         assert df.schema["settlement_price"] == pl.Int32
 
-    def test_normalize_values_correct(self, tmp_settings, es_instrument, sample_chain, setup_aggregate):
+    def test_normalize_values_correct(
+        self, tmp_settings, es_instrument, sample_chain, setup_aggregate
+    ):
         df = query(es_instrument, tmp_settings, sample_chain, normalize_tick_size=True)
 
         assert df["open"][0] == 18000  # 4500.00 / 0.25
@@ -208,7 +267,9 @@ class TestNormalizeTickSize:
 class TestCheckTicksizeAccuracy:
     """Tests de --check-ticksize-accuracy (bilan de qualité)."""
 
-    def test_check_accuracy_clean_data(self, tmp_settings, es_instrument, sample_chain, setup_aggregate):
+    def test_check_accuracy_clean_data(
+        self, tmp_settings, es_instrument, sample_chain, setup_aggregate
+    ):
         from myquantstore.storage.aggregate_cache import read_aggregate
 
         df = read_aggregate(es_instrument, tmp_settings)
@@ -278,7 +339,9 @@ class TestCheckTicksizeAccuracy:
         assert bilan["non_conformes"][0] == 2
         assert bilan["statut"][0] == "ERREUR"
 
-    def test_check_accuracy_does_not_modify_data(self, tmp_settings, es_instrument, sample_chain, setup_aggregate):
+    def test_check_accuracy_does_not_modify_data(
+        self, tmp_settings, es_instrument, sample_chain, setup_aggregate
+    ):
         from myquantstore.storage.aggregate_cache import read_aggregate
 
         df_before = read_aggregate(es_instrument, tmp_settings)

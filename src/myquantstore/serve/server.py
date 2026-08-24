@@ -98,9 +98,12 @@ def create_serve_app(settings: Settings) -> FastAPI:
         dedup_timestamps: bool = Query(True),
         intraday_begin: str | None = Query(None),
         intraday_end: str | None = Query(None),
-        timezone: str | None = Query(None, description="IANA TZ pour intraday (défaut [chart] timezone)"),
+        timezone: str | None = Query(
+            None, description="IANA TZ pour intraday (défaut [chart] timezone)"
+        ),
         normalize_tick_size: bool = Query(False),
         include_cols: str | None = Query(None),
+        forward_fill: bool = Query(False),
     ) -> Response:
         try:
             inst = _resolve_instrument(settings, instrument, type)
@@ -167,6 +170,7 @@ def create_serve_app(settings: Settings) -> FastAPI:
                 no_split=no_split,
                 dedup_timestamps=dedup_timestamps,
                 include_cols=cols,
+                forward_fill=forward_fill,
             )
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -338,6 +342,7 @@ def _health_payload(health: InstrumentHealth) -> dict[str, Any]:
             for issue in health.issues
         ],
     }
+
 
 def _futures_extras(instrument: Instrument, settings: Settings) -> dict[str, Any]:
     """Infos futures depuis le cache contrats + agrégé local (aucun appel API)."""
