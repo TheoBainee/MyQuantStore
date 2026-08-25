@@ -856,6 +856,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "  myquantstore chart\n"
             "  myquantstore chart AAPL --timescale-unit day\n"
             "  myquantstore chart ES --port 8050 --adjust\n"
+            "  myquantstore chart NQ --forward-fill\n"
             "  myquantstore chart --host 0.0.0.0 --mdns"
         ),
     )
@@ -936,6 +937,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-split",
         action="store_true",
         help="Stocks: prix bruts (désactive split-adjust par défaut)",
+    )
+    p_chart.add_argument(
+        "--forward-fill",
+        action="store_true",
+        help=(
+            "Réinsère les barres manquantes (opt-in, OFF par défaut) : "
+            "OHLC = dernier close, volume = 0. Intra-session / jours ouvrés. "
+            "Même sémantique que query/serve."
+        ),
     )
 
     # --- serve ---
@@ -2497,6 +2507,7 @@ def _cmd_chart(settings: Settings, args: argparse.Namespace) -> int:
         normalize_tick_size=args.normalize_tick_size,
         adjust_rollover=args.adjust,
         no_split=args.no_split,
+        forward_fill=args.forward_fill,
         thumbnail_lookback_days=settings.thumbnail_lookback_days,
         candle_up=settings.chart_candle_up,
         candle_down=settings.chart_candle_down,

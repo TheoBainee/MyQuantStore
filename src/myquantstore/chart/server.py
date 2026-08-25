@@ -207,7 +207,8 @@ def create_chart_app(
                 resolution != "1day" and k_minutes > 1
             )
             wanted = ["window_start", "open", "high", "low", "close", "volume"]
-            if resampled:
+            # candle_count après resample, ou pour marquer les barres synthétiques (--forward-fill)
+            if resampled or defaults.forward_fill:
                 wanted.append("candle_count")
             df = _query_chart_ohlcv(
                 instrument,
@@ -385,6 +386,7 @@ class ChartDefaults:
         normalize_tick_size: bool = False,
         adjust_rollover: bool = False,
         no_split: bool = False,
+        forward_fill: bool = False,
         thumbnail_lookback_days: int = 90,
         candle_up: str = "#26a69a",
         candle_down: str = "#ef5350",
@@ -406,6 +408,7 @@ class ChartDefaults:
         self.normalize_tick_size = normalize_tick_size
         self.adjust_rollover = adjust_rollover
         self.no_split = no_split
+        self.forward_fill = forward_fill
         self.thumbnail_lookback_days = thumbnail_lookback_days
         self.candle_up = candle_up
         self.candle_down = candle_down
@@ -462,6 +465,7 @@ def _query_chart_ohlcv(
         "normalize_tick_size": defaults.normalize_tick_size if resolution != "1day" else False,
         "adjust_rollover": defaults.adjust_rollover,
         "no_split": defaults.no_split,
+        "forward_fill": defaults.forward_fill,
         "limit": None,
     }
     try:

@@ -662,6 +662,7 @@ La fonction `query` accepte plusieurs flags et paramètres de transformation :
 - `limit` : retourne les N premières lignes (`df.head(N)`). Le chart server passe `limit=None` et fait `df.tail(N)` après coup pour obtenir les candles les plus récentes.
 - `resolution` / `k_days` / `week_aligned` : track extraday Yahoo (`1day`).
 - `dedup_timestamps` (`--no-dedup-timestamps` pour désactiver) : **ON par défaut**. Une barre par `window_start` ; au roll, le contrat le plus récent de la chaîne gagne. Après `--adjust` et le bilan tick size, avant normalize/resample.
+- `forward_fill` (`--forward-fill`, serve `?forward_fill=true`, chart `--forward-fill`) : **OFF par défaut**. Après resample, réinsère les barres absentes (intra-session 1min / jours ouvrés 1day) avec OHLC = dernier close, volume 0, `candle_count` 0.
 
 `query()` déduplique **par défaut** sur `window_start`. `--no-dedup-timestamps` renvoie les doublons de roll tels quels (§8.6). L'agrégat, lui, n'est pas une série continue.
 
@@ -695,7 +696,7 @@ def query(
         elif instrument.type == FUTURES and chain is not None:
             df = apply_rollover_adjustment(df, chain)
 
-    # ticksize check → dedup_timestamps (défaut) → normalize → resample → limit
+    # ticksize check → dedup_timestamps (défaut) → normalize → resample → forward_fill (opt-in) → limit
     if limit and limit > 0:
         df = df.head(limit)
 
@@ -876,7 +877,7 @@ Les 3 helpers se déclenchent uniquement si `level >= DEBUG` (via `isEnabledFor`
 | `myquantstore fetch` | Historise les OHLCV (défaut `--timeframe all` = 1min Massive + 1day Yahoo). Futures : skip **par contrat** si dump du jour. Exit 1 si error/not_implemented. | `--instrument ES`, `--type`, `--timeframe all\|1min\|1day`, `--force`, `--dry-run`, `--no-cascade` |
 | `myquantstore aggregate` | Régénère le cache agrégé depuis dumps bruts. Auto-déclenche `fetch` si dumps manquants. | `--instrument ES`, `--type`, `--timeframe all\|1min\|1day`, `--no-cascade` |
 | `myquantstore query <instrument>` | Interroge l'historique continu. Auto-déclenche cascade type-aware si manquant. | `--start`, `--end`, `--timescale-unit min\|hour\|day\|week`, `--timescale-nb K`, `--intraday-begin/end`, `--adjust` (rollover futures / dividends stocks), `--no-split`, `--forward-fill`, `--normalize-tick-size` (**incompatible avec `--adjust`**), `--check-ticksize-accuracy`, `--output`, `--limit`, `--no-cascade` |
-| `myquantstore chart [product]` | Serveur visualisation : dashboard `/` ; avec arg ouvre `/{type}:{symbol}`. Cascade 1day pour miniatures si manquant. | `--port`, `--host`, `--mdns`, `--timescale-unit`, `--timescale-nb`, `--nb-candle`, `--intraday-begin`, `--intraday-end`, `--normalize-tick-size`, `--adjust`, `--no-split`, `--no-cascade` |
+| `myquantstore chart [product]` | Serveur visualisation : dashboard `/` ; avec arg ouvre `/{type}:{symbol}`. Cascade 1day pour miniatures si manquant. | `--port`, `--host`, `--mdns`, `--timescale-unit`, `--timescale-nb`, `--nb-candle`, `--intraday-begin`, `--intraday-end`, `--normalize-tick-size`, `--adjust`, `--no-split`, `--forward-fill`, `--no-cascade` |
 | `myquantstore serve` | API HTTP `query()` (Parquet / Arrow). Pas de cascade, pas d'auth v1. Bind `[serve]` si flags absents. | `--host`, `--port` |
 | `myquantstore status` | Snapshot par instrument : dumps, agrégé, lag/STALE, listing cache. | `--instrument ES`, `--type`, `--check`, `--strict-missing`, `--tickers` |
 | `myquantstore schedule` | Jobs OS : fetch (OHLCV) + caches (Massive). | `install\|run\|status\|show\|uninstall` `[fetch\|caches]` |
@@ -972,7 +973,7 @@ Le serveur est lancé via `uvicorn` (bloquant). Un seul serveur sert tous les pr
 | `before` | str ISO 8601 (optionnel) | Retourne les chandeliers **avant** cette date (inclusive). Utilisé pour le lazy loading. |
 
 **Paramètres server-side** (set au lancement via CLI, pas dans l'API — restart pour changer) :
-`intraday_begin`, `intraday_end`, `normalize_tick_size`, `adjust_rollover`. Injectés dans le frontend via `_render_chart_html()`.
+`intraday_begin`, `intraday_end`, `normalize_tick_size`, `adjust_rollover`, `forward_fill` (opt-in, même sémantique que query/serve). Injectés dans le frontend via `_render_chart_html()` (sauf `forward_fill` / `adjust` / `no_split` : passés à `query()` côté serveur uniquement).
 
 ### 12bis.3 Format de transfert Arrow IPC
 
@@ -1081,7 +1082,7 @@ tickers d'agrégat, le contrat courant et sa maturité (cache local). Réponse d
 | `test_stocks_fetch.py` / `test_v2_single_fetch.py` / `test_yahoo_api.py` | Fetchers multi-type + Yahoo daily (ranges, skip jour, reverse split) |
 | `test_reader.py` | `adjust_rollover=False` retourne chaîne ; `True` applique back-adjust futures / dividends stocks ; filtres `start`/`end` ; `normalize_tick_size` Int32 ; `check_ticksize_accuracy` bilan ; incompatibilité `normalize_tick_size` × `adjust_rollover` ; resampling / intraday |
 | `test_resampler.py` | Cohérence du bucketing (anchor par session) ; drop des partiels de fin ; gaps conservés (`candle_count < k`) ; agrégation OHLCV (open=first, high=max, low=min, close=last) ; k=1 noop ; k invalide (`< 1`) ; intraday normal (`begin < end`) ; intraday wrap-around (`begin > end`) ; `begin == end` lève `ValueError` ; cohérence intraday+resample ; drop partial avec intraday |
-| `test_chart_server.py` | Dashboard `/` multi-type ; page HTML + bouton maison ; static JS ; `/api/candles` Arrow IPC ; `before` ; timescale 7min ; unit invalide → 400 ; `/api/meta` ; `/api/thumbnail` SVG ; product inconnu → 404 ; sparklines unit |
+| `test_chart_server.py` | Dashboard `/` multi-type ; page HTML + bouton maison ; static JS ; `/api/candles` Arrow IPC ; `before` ; timescale 7min ; unit invalide → 400 ; `forward_fill` opt-in ; `/api/meta` ; `/api/thumbnail` SVG ; product inconnu → 404 ; sparklines unit |
 | `test_serve.py` | `/v1/health` 200/503 ; `/v1/instruments` ; `/v1/query` Parquet/Arrow 200/400/404 ; dédup roll défaut / `dedup_timestamps=false` ; `forward_fill=true` ; CLI `--host`/`--port` |
 | `test_cascade.py` | Cascade `query` → `aggregate` → `fetch` → `contracts` ; `--no-cascade` erreur ; logs WARNING ; status avant cascade |
 | `test_cli.py` | Toutes commandes, flags, format output, `status` affiche `RolloverChain` ; `query --normalize-tick-size` ; `query --adjust` ; `query --check-ticksize-accuracy` (bilan + exit code) ; incompatibilité `--normalize-tick-size` × `--adjust` ; `query --timescale-unit`/`--timescale-nb` ; `chart` commande |

@@ -231,8 +231,8 @@ myquantstore config add TSLA NVDA                         # lookup type via cach
 | `myquantstore status [--instrument ES] [--type futures] [--check]` | État par instrument ; `--check` exit 1 si STALE |
 | `myquantstore fetch [--instrument ES] [--type futures] [--timeframe all\|1min\|1day] [--force] [--dry-run] [--no-cascade]` | Historise les chandeliers OHLCV (défaut `--timeframe all` = 1min+1day) |
 | `myquantstore aggregate [--instrument ES] [--type futures] [--timeframe all\|1min\|1day] [--no-cascade]` | Régénère le cache agrégé (générique) |
-| `myquantstore query <instrument> [--type] [--start] [--end] [--timescale-unit min\|hour\|day\|week] [--timescale-nb K] [--intraday-begin HH:MM] [--intraday-end HH:MM] [--adjust] [--no-split] [--no-dedup-timestamps] [--normalize-tick-size] [--check-ticksize-accuracy] [--output] [--limit] [--include-cols] [--no-cascade]` | Interroge l'historique continu |
-| `myquantstore chart [instrument] [--type] [--port] [--host] [--mdns] [--timescale-unit] [--timescale-nb] [--nb-candle] [--intraday-begin] [--intraday-end] [--normalize-tick-size] [--no-split] [--adjust] [--no-cascade]` | Serveur de visualisation interactive |
+| `myquantstore query <instrument> [--type] [--start] [--end] [--timescale-unit min\|hour\|day\|week] [--timescale-nb K] [--intraday-begin HH:MM] [--intraday-end HH:MM] [--adjust] [--no-split] [--no-dedup-timestamps] [--forward-fill] [--normalize-tick-size] [--check-ticksize-accuracy] [--output] [--limit] [--include-cols] [--no-cascade]` | Interroge l'historique continu |
+| `myquantstore chart [instrument] [--type] [--port] [--host] [--mdns] [--timescale-unit] [--timescale-nb] [--nb-candle] [--intraday-begin] [--intraday-end] [--normalize-tick-size] [--no-split] [--adjust] [--forward-fill] [--no-cascade]` | Serveur de visualisation interactive |
 | `myquantstore serve [--host] [--port]` | API HTTP `query()` (Parquet / Arrow, localhost, pas de cascade) |
 | `myquantstore portfolio {stats\|corr\|cov\|optimize\|allocate\|frontier} [-i …] [--value] [--objective equal\|min-vol\|max-sharpe] [--export]` | MPT stocks 1day + lots ; chart `portfolio:*` (voir [docs/PORTFOLIO.md](docs/PORTFOLIO.md)) |
 | `myquantstore futures contracts [--symbol ES] [--refresh] [--active-only]` | Liste/rafraîchit le cache contrats futures |
@@ -296,6 +296,9 @@ myquantstore chart NQ
 
 # Avec timescale 7min et filtrage intraday
 myquantstore chart NQ --timescale-unit min --timescale-nb 7 --intraday-begin 09:30 --intraday-end 16:00
+
+# Forward-fill des trous (même sémantique que query/serve, opt-in)
+myquantstore chart NQ --forward-fill
 
 # Accessible sur le réseau local (mDNS)
 myquantstore chart --mdns --host 0.0.0.0

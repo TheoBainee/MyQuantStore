@@ -226,6 +226,56 @@ class TestChartServer:
         resp = client.get("/api/candles?product=futures:ES&timescale_unit=sec&timescale_nb=1")
         assert resp.status_code == 400
 
+    def test_forward_fill_default_off_keeps_gap(self, tmp_settings, es_instrument, sample_chain):
+        """Sans --forward-fill, les minutes manquantes restent absentes."""
+        ts = [
+            datetime(2025, 6, 1, 9, 30, 0, tzinfo=UTC),
+            datetime(2025, 6, 1, 9, 32, 0, tzinfo=UTC),
+        ]
+        prices = [4500.00, 4502.50]
+        df = _make_ohlcv_df("ESM5", ts, prices)
+        save_raw_dump(df, es_instrument, "ESM5", "20250601T093000", tmp_settings, resolution="1min")
+        aggregate(es_instrument, tmp_settings, resolution="1min")
+        key = es_instrument.key
+        defaults = ChartDefaults(default_product=key, forward_fill=False)
+        app = create_chart_app(
+            tmp_settings, {key: es_instrument}, {key: sample_chain}, defaults
+        )
+        client = TestClient(app)
+        resp = client.get("/api/candles?product=futures:ES&timescale_unit=min&timescale_nb=1&limit=10")
+        assert resp.status_code == 200
+        out = pl.read_ipc(BytesIO(resp.content))
+        assert out.height == 2
+
+    def test_forward_fill_on_inserts_gap(self, tmp_settings, es_instrument, sample_chain):
+        """ChartDefaults.forward_fill=True → même sémantique que query --forward-fill."""
+        ts = [
+            datetime(2025, 6, 1, 9, 30, 0, tzinfo=UTC),
+            datetime(2025, 6, 1, 9, 32, 0, tzinfo=UTC),
+        ]
+        prices = [4500.00, 4502.50]
+        df = _make_ohlcv_df("ESM5", ts, prices)
+        save_raw_dump(df, es_instrument, "ESM5", "20250601T093000", tmp_settings, resolution="1min")
+        aggregate(es_instrument, tmp_settings, resolution="1min")
+        key = es_instrument.key
+        defaults = ChartDefaults(default_product=key, forward_fill=True)
+        app = create_chart_app(
+            tmp_settings, {key: es_instrument}, {key: sample_chain}, defaults
+        )
+        client = TestClient(app)
+        resp = client.get("/api/candles?product=futures:ES&timescale_unit=min&timescale_nb=1&limit=10")
+        assert resp.status_code == 200
+        out = pl.read_ipc(BytesIO(resp.content))
+        assert out.height == 3
+        assert "candle_count" in out.columns
+        # barre synthétique : volume 0, candle_count 0, OHLC plat = last close
+        synth = out.filter(pl.col("candle_count") == 0)
+        assert synth.height == 1
+        assert synth["volume"][0] == 0.0
+        assert synth["open"][0] == synth["close"][0]
+        # close de 09:30 = price + 0.5 = 4500.5
+        assert synth["close"][0] == 4500.5
+
     def test_get_meta_returns_json(self, chart_setup):
         """GET /api/meta retourne tick_size pour futures."""
         settings, instruments, chains, defaults = chart_setup

@@ -62,7 +62,7 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
 - Ex : contrat expire vendredi 19 → dernier jour conservé = vendredi 12.
 - RolloverChain + RolloverSegment pour active_contract, continuous_segments, tick_size.
 - Fetch 1min : `window_start.gte/lte` en `YYYY-MM-DD` inclusifs sur `active_from` / `active_until` (même date de roll) → recouvrement possible des deux contrats.
-- Pour query : gaps naturels conservés ; timestamps dupliqués au roll **dédupliqués par défaut** (contrat le plus récent). `--no-dedup-timestamps` pour garder les deux.
+- Pour query/chart : gaps naturels conservés **par défaut** ; timestamps dupliqués au roll **dédupliqués par défaut** (contrat le plus récent). `--no-dedup-timestamps` pour garder les deux. `--forward-fill` (opt-in) réinsère les barres manquantes intra-session / jours ouvrés (OHLC = last close).
 
 ### Corporate actions (stocks)
 - **Massive 1min** : fetch `adjusted=false` → prix bruts ; cache `corporate_actions/`.
@@ -83,7 +83,7 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
 - Agrégateur générique (polars unique + casts).
 - Query : reader + resampler + adjust (splits stocks ; `--adjust` = dividends stocks / Panama futures).
   `--end YYYY-MM-DD` = fin de journée inclusive (pas minuit). `--check-ticksize-accuracy` exit 1 si ERREUR.
-  `--forward-fill` / `query(..., forward_fill=True)` / serve `?forward_fill=true` : opt-in, après resample.
+  `--forward-fill` / `query(..., forward_fill=True)` / serve `?forward_fill=true` / chart `--forward-fill` : opt-in, après resample (même sémantique).
 - CLI complète + chart serveur (dashboard `/` multi-type, miniatures SVG 1day, charts `/{type}:{symbol}`). Couleurs conf : `[chart] candle_up/down` ; overlay `[chart.overlay] overlay_dir` + `[chart.overlay.backtest]` (tx/order buy/sell hex). Rétrocompat `[chart] overlay_dir`. API `/api/overlays`, `/api/overlay/{stem}`.
 - Chart timezone : `[chart] timezone` (IANA, défaut UTC) — affichage axe/tooltip + `intraday_begin/end` en heures murales de cette TZ.
 - **`myquantstore serve`** : API HTTP `query()` (`/v1/health`, `/v1/instruments`, `/v1/query`) — Parquet / Arrow, pas de cascade, pas d'auth v1. Spec : `docs/SERVE.md`.
