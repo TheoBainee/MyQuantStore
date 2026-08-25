@@ -437,10 +437,3 @@ Après quoi `myquantstore fe<Tab>` complète automatiquement en `myquantstore fe
 Le code de MyQuantStore est sous licence **MIT** (voir [LICENSE](./LICENSE)).
 
 La librairie [TradingView Lightweight Charts](https://www.tradingview.com/lightweight-charts/) utilisée par la commande `myquantstore chart` est sous licence **Apache 2.0** (voir [src/myquantstore/chart/NOTICE](./src/myquantstore/chart/NOTICE) et [LICENSE-2.0.txt](./src/myquantstore/chart/LICENSE-2.0.txt)).
- être redistribuées. Ce dépôt ne sert qu'à partager l'outil de collecte, pas les données elles-mêmes.
-
-## Licence
-
-Le code de MyQuantStore est sous licence **MIT** (voir [LICENSE](./LICENSE)).
-
-La librairie [TradingView Lightweight Charts](https://www.tradingview.com/lightweight-charts/) utilisée par la commande `myquantstore chart` est sous licence **Apache 2.0** (voir [src/myquantstore/chart/NOTICE](./src/myquantstore/chart/NOTICE) et [LICENSE-2.0.txt](./src/myquantstore/chart/LICENSE-2.0.txt)).

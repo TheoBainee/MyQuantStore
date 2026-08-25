@@ -1132,13 +1132,3 @@ tickers d'agrégat, le contrat courant et sa maturité (cache local). Réponse d
 > Ce plan a servi au bootstrap futures-only. L'état courant est multi-type ×
 > dual-source (Massive 1min + Yahoo 1day), avec serve, schedule dual-job,
 > portfolio MPT, overlays chart. Voir README + `docs/IMPROVEMENTS.md` pour la suite.
-
----TS.md` pour la suite.
-
----ootstrap futures-only. L'état courant est multi-type ×
-> dual-source (Massive 1min + Yahoo 1day), avec serve, schedule dual-job,
-> portfolio MPT, overlays chart. Voir README + `docs/IMPROVEMENTS.md` pour la suite.
-
----MENTS.md` pour la suite.
-
----
