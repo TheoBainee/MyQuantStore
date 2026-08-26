@@ -849,7 +849,14 @@ def _build_parser() -> argparse.ArgumentParser:
         description=(
             "Démarre un serveur HTTP local (FastAPI) et ouvre un graphique\n"
             "candlestick interactif. Les données viennent des agrégés locaux\n"
-            "(même logique dual-track que query)."
+            "(même logique dual-track que query).\n"
+            "\n"
+            "Paniers MPT (section Stocks) : boutons Max Sharpe / Min Vol →\n"
+            "products lazy portfolio:max-sharpe et portfolio:min-vol.\n"
+            "Optim au premier accès, cache mémoire process (pas de TTL) —\n"
+            "indépendant de `myquantstore portfolio` (qui recalcule à chaque run).\n"
+            "Série = combo des legs sur la barre de base, puis resample, rebase 100.\n"
+            "Voir aussi : myquantstore portfolio -h · docs/PORTFOLIO.md"
         ),
         epilog=(
             "Exemples:\n"
@@ -857,7 +864,8 @@ def _build_parser() -> argparse.ArgumentParser:
             "  myquantstore chart AAPL --timescale-unit day\n"
             "  myquantstore chart ES --port 8050 --adjust\n"
             "  myquantstore chart NQ --forward-fill\n"
-            "  myquantstore chart --host 0.0.0.0 --mdns"
+            "  myquantstore chart --host 0.0.0.0 --mdns\n"
+            "  # dashboard : paniers portfolio:max-sharpe / portfolio:min-vol (lazy)"
         ),
     )
     p_chart.add_argument(
@@ -1215,18 +1223,42 @@ def _build_parser() -> argparse.ArgumentParser:
         "portfolio",
         help="MPT stocks 1day : stats, corr, optim, allocate, frontier",
         description=(
-            "Modern Portfolio Theory sur l'univers stocks (track 1day Yahoo).\n"
-            "Returns total-return (split + dividend adjust). Optim long-only\n"
-            "numpy (equal | min-vol | max-sharpe) + frontière QP (SLSQP)."
+            "Modern Portfolio Theory sur l'univers stocks configurés\n"
+            "(track 1day Yahoo uniquement — pas de 1min / pas de futures).\n"
+            "\n"
+            "Returns total-return par défaut (split-adjust + dividendes).\n"
+            "Optim long-only (Σw=1, w≥0) : equal | min-vol | max-sharpe.\n"
+            "Frontière : grille QP target-return (SLSQP) ; fallback Dirichlet.\n"
+            "\n"
+            "Taux sans risque (Sharpe / max-sharpe) :\n"
+            "  --rf RATE          override CLI (fraction annualisée, ex. 0.04)\n"
+            "  sinon [portfolio] rf_source=yahoo → ^IRX (cache disque TTL)\n"
+            "  ou rf_source=static → risk_free_rate\n"
+            "\n"
+            "Caches :\n"
+            "  • CLI portfolio : pas de cache des résultats d'optim — chaque\n"
+            "    invocation recalcule panel + returns + optim.\n"
+            "  • RF Yahoo (^IRX) : cache disque sous cache/risk_free/ (TTL\n"
+            "    [portfolio] rf_cache_ttl_days, défaut 1 jour).\n"
+            "  • chart : boutons Max Sharpe / Min Vol → products lazy\n"
+            "    portfolio:max-sharpe et portfolio:min-vol. Optim au premier\n"
+            "    accès, cache mémoire process (pas de TTL) — indépendant de\n"
+            "    cette CLI. Série OHLCV = combo des legs puis resample, rebase 100.\n"
+            "\n"
+            "Config [portfolio] : lookback, RF, default_value, seeds, min_coverage.\n"
+            "Doc détaillée : docs/PORTFOLIO.md"
         ),
         epilog=(
             "Exemples:\n"
             "  myquantstore portfolio stats\n"
             "  myquantstore portfolio corr --from 2020-01-01 --export /tmp/corr.parquet\n"
+            "  myquantstore portfolio cov --timescale week\n"
             "  myquantstore portfolio optimize --objective min-vol\n"
             "  myquantstore portfolio optimize --objective max-sharpe -i AAPL,NVDA\n"
             "  myquantstore portfolio allocate --objective min-vol --value 20000\n"
-            "  myquantstore portfolio frontier --timescale week"
+            "  myquantstore portfolio frontier --timescale week --points 30\n"
+            "  myquantstore portfolio frontier --method sample\n"
+            "  myquantstore chart   # paniers lazy portfolio:max-sharpe / min-vol"
         ),
     )
     port_sub = p_port.add_subparsers(dest="portfolio_command", help="Sous-commande portfolio")
@@ -1239,8 +1271,10 @@ def _build_parser() -> argparse.ArgumentParser:
             default=None,
             metavar="SYMBOL[,SYMBOL…]",
             help=(
-                "Titre(s) à inclure (répétable ; CSV par occurrence, ex: -i AAPL,NVDA). "
-                "Défaut: tous les stocks configurés"
+                "Titre(s) stocks à inclure (répétable ; CSV par occurrence, "
+                "ex: -i AAPL,NVDA ou -i AAPL -i NVDA). "
+                "Défaut: tous les stocks de [instruments]. "
+                "Hors univers config → erreur."
             ),
         )
         p.add_argument(
@@ -1248,57 +1282,189 @@ def _build_parser() -> argparse.ArgumentParser:
             dest="date_from",
             default=None,
             metavar="DATE",
-            help="Début fenêtre (YYYY-MM-DD). Défaut: lookback_years config",
+            help=(
+                "Début fenêtre returns (YYYY-MM-DD). "
+                "Défaut: aujourd'hui − [portfolio] default_lookback_years"
+            ),
         )
         p.add_argument(
             "--to",
             dest="date_to",
             default=None,
             metavar="DATE",
-            help="Fin fenêtre (YYYY-MM-DD). Défaut: aujourd'hui",
+            help="Fin fenêtre returns (YYYY-MM-DD). Défaut: aujourd'hui",
         )
         p.add_argument(
             "--timescale",
             choices=["day", "week"],
             default="day",
-            help="Fréquence returns (défaut: day)",
+            help=(
+                "Fréquence des returns après panel 1day "
+                "(day = défaut, annualisation 252 ; week = resample)"
+            ),
         )
         p.add_argument(
             "--rf",
             type=float,
             default=None,
             metavar="RATE",
-            help=("Taux sans risque annualisé (fraction, ex. 0.04). "
-                "Override CLI ; sinon rf_source=yahoo (^IRX) ou risk_free_rate static"),
+            help=(
+                "Taux sans risque annualisé en fraction (ex. 0.04 = 4%%). "
+                "Override CLI (source=cli). Sans flag : rf_source=yahoo → ^IRX "
+                "via cache/risk_free/ (TTL rf_cache_ttl_days) ; "
+                "rf_source=static → risk_free_rate. "
+                "Utilisé pour Sharpe (stats) et max-sharpe / frontier."
+            ),
         )
         p.add_argument(
             "--log-returns",
             action="store_true",
-            help="Returns logarithmiques au lieu de simple",
+            help=(
+                "Returns logarithmiques log(P_t/P_{t-1}) au lieu de simple "
+                "(P_t/P_{t-1}-1, défaut)"
+            ),
         )
         p.add_argument(
             "--no-div",
             action="store_true",
-            help="Price return only (pas d'ajustement dividendes)",
+            help=(
+                "Price return only : désactive l'ajustement dividendes "
+                "(split-adjust reste ON). Défaut CLI = total-return"
+            ),
         )
         p.add_argument(
             "--export",
             default=None,
             metavar="PATH",
-            help="Export résultat (.parquet ou .csv)",
+            help=(
+                "Écrit le résultat complet (.parquet ou .csv selon l'extension). "
+                "Stdout reste tronqué via [display] max_rows/max_columns"
+            ),
         )
 
-    for name, help_txt in (
-        ("stats", "μ/σ/Sharpe annualisés par titre"),
-        ("corr", "Matrice de corrélation des returns"),
-        ("cov", "Matrice de covariance annualisée"),
-        ("optimize", "Optimisation long-only (equal|min-vol|max-sharpe)"),
-        ("allocate", "Lots entiers à partir des poids + capital"),
-        ("frontier", "Frontière efficiente (QP target-return grid)"),
-    ):
+    _PORTFOLIO_SUB: dict[str, dict[str, str]] = {
+        "stats": {
+            "help": "μ/σ/Sharpe annualisés par titre",
+            "description": (
+                "Statistiques individuelles sur la fenêtre :\n"
+                "  mean_ann, vol_ann, sharpe (vs RF résolu).\n"
+                "\n"
+                "Annualisation day : μ̄·252 , σ·√252 (trading_days_per_year).\n"
+                "Pas de portefeuille agrégé ici — voir optimize / allocate.\n"
+                "Chaque run recalcule le panel (pas de cache d'optim CLI)."
+            ),
+            "epilog": (
+                "Exemples:\n"
+                "  myquantstore portfolio stats\n"
+                "  myquantstore portfolio stats -i AAPL,MSFT,NVDA --from 2020-01-01\n"
+                "  myquantstore portfolio stats --rf 0.04 --export /tmp/stats.parquet"
+            ),
+        },
+        "corr": {
+            "help": "Matrice de corrélation des returns",
+            "description": (
+                "Matrice de corrélation des returns de l'univers\n"
+                "(même panel / fenêtre / timescale que les autres sous-cmd).\n"
+                "Stdout tronqué ([display]) ; --export pour la matrice complète."
+            ),
+            "epilog": (
+                "Exemples:\n"
+                "  myquantstore portfolio corr\n"
+                "  myquantstore portfolio corr --from 2020-01-01 --export /tmp/corr.parquet\n"
+                "  myquantstore portfolio corr --timescale week -i AAPL,NVDA,COST"
+            ),
+        },
+        "cov": {
+            "help": "Matrice de covariance annualisée",
+            "description": (
+                "Covariance annualisée des returns (facteur trading_days_per_year).\n"
+                "Entrée typique des optim min-vol / max-sharpe / frontier.\n"
+                "Stdout tronqué ; --export pour la matrice complète."
+            ),
+            "epilog": (
+                "Exemples:\n"
+                "  myquantstore portfolio cov\n"
+                "  myquantstore portfolio cov --timescale week --export /tmp/cov.csv"
+            ),
+        },
+        "optimize": {
+            "help": "Optimisation long-only (equal|min-vol|max-sharpe)",
+            "description": (
+                "Poids optimaux long-only (Σw=1, w_i≥0) sur l'univers.\n"
+                "\n"
+                "Objectifs (--objective) :\n"
+                "  equal       poids uniformes 1/N\n"
+                "  min-vol     min w'Σw\n"
+                "  max-sharpe  max (w'μ − rf) / √(w'Σw)  (défaut)\n"
+                "\n"
+                "Affiche poids + μ/σ/Sharpe du portefeuille.\n"
+                "\n"
+                "Cache : aucun côté CLI (recalcul à chaque run).\n"
+                "Côté chart : les mêmes objectifs min-vol / max-sharpe sont\n"
+                "exposés en products lazy portfolio:min-vol et\n"
+                "portfolio:max-sharpe (cache mémoire process, pas de TTL),\n"
+                "indépendants de cette commande — myquantstore chart."
+            ),
+            "epilog": (
+                "Exemples:\n"
+                "  myquantstore portfolio optimize\n"
+                "  myquantstore portfolio optimize --objective min-vol\n"
+                "  myquantstore portfolio optimize --objective max-sharpe -i AAPL,NVDA,COST\n"
+                "  myquantstore portfolio optimize --rf 0.03 --export /tmp/w.parquet"
+            ),
+        },
+        "allocate": {
+            "help": "Lots entiers à partir des poids + capital",
+            "description": (
+                "Enchaîne optimize puis allocation en lots entiers sur le\n"
+                "capital (--value ou [portfolio] default_value).\n"
+                "\n"
+                "Sortie :\n"
+                "  weights_th   cibles d'optim (somment à 1)\n"
+                "  weights_eff  notional_i / invested (hors cash) → Σ=1 sur lots\n"
+                "  cash         reliquat non investi\n"
+                "  Identité : invested + cash = value\n"
+                "\n"
+                "Prix = dernier close du panel. Pas de cache d'optim CLI\n"
+                "(recalcul à chaque run) ; distinct du cache lazy chart."
+            ),
+            "epilog": (
+                "Exemples:\n"
+                "  myquantstore portfolio allocate\n"
+                "  myquantstore portfolio allocate --objective min-vol --value 20000\n"
+                "  myquantstore portfolio allocate --objective max-sharpe -i AAPL,NVDA --value 50000\n"
+                "  myquantstore portfolio allocate --export /tmp/lots.parquet"
+            ),
+        },
+        "frontier": {
+            "help": "Frontière efficiente (QP target-return grid)",
+            "description": (
+                "Trace la frontière efficiente long-only :\n"
+                "pour chaque target μ* sur une grille de --points points\n"
+                "entre μ_min-vol et max_i μ_i :\n"
+                "  min w'Σw  s.t.  w'μ = μ* , Σw=1 , w≥0\n"
+                "\n"
+                "--method qp     SLSQP target-return (défaut, précis)\n"
+                "--method sample tirages Dirichlet legacy (frontier_samples)\n"
+                "\n"
+                "Pas de cache des points côté CLI. Le chart n'expose pas la\n"
+                "frontière — seulement les paniers max-sharpe / min-vol lazy."
+            ),
+            "epilog": (
+                "Exemples:\n"
+                "  myquantstore portfolio frontier\n"
+                "  myquantstore portfolio frontier --points 30 --timescale week\n"
+                "  myquantstore portfolio frontier --method sample\n"
+                "  myquantstore portfolio frontier --export /tmp/frontier.parquet"
+            ),
+        },
+    }
+    for name, meta in _PORTFOLIO_SUB.items():
         pp = port_sub.add_parser(
             name,
-            help=help_txt,
+            help=meta["help"],
+            description=meta["description"],
+            epilog=meta["epilog"],
             formatter_class=_HELP_FMT,
         )
         _add_portfolio_common(pp)
@@ -1307,7 +1473,12 @@ def _build_parser() -> argparse.ArgumentParser:
                 "--objective",
                 choices=["equal", "min-vol", "max-sharpe"],
                 default="max-sharpe",
-                help="Fonction objectif (défaut: max-sharpe)",
+                help=(
+                    "Fonction objectif long-only : equal | min-vol | max-sharpe "
+                    "(défaut: max-sharpe). "
+                    "Chart lazy : portfolio:max-sharpe / portfolio:min-vol "
+                    "(equal non exposé au dashboard)"
+                ),
             )
         if name == "allocate":
             pp.add_argument(
@@ -1315,7 +1486,11 @@ def _build_parser() -> argparse.ArgumentParser:
                 type=float,
                 default=None,
                 metavar="V",
-                help="Capital à allouer (défaut: config portfolio.default_value)",
+                help=(
+                    "Capital total à allouer en devise des prix du panel "
+                    "(défaut: [portfolio] default_value). "
+                    "Lots entiers → cash résiduel possible"
+                ),
             )
         if name == "frontier":
             pp.add_argument(
@@ -1323,13 +1498,20 @@ def _build_parser() -> argparse.ArgumentParser:
                 type=int,
                 default=40,
                 metavar="N",
-                help="Nombre de targets return sur la grille QP (défaut: 40)",
+                help=(
+                    "Nombre de targets return sur la grille QP "
+                    "(défaut: 40). Ignoré en pratique si --method sample "
+                    "utilise frontier_samples"
+                ),
             )
             pp.add_argument(
                 "--method",
                 choices=["qp", "sample"],
                 default="qp",
-                help="qp = SLSQP target-return (défaut) ; sample = Dirichlet legacy",
+                help=(
+                    "qp = SLSQP target-return par point (défaut, recommandé) ; "
+                    "sample = tirages Dirichlet legacy ([portfolio] frontier_samples)"
+                ),
             )
 
     # --- search ---
