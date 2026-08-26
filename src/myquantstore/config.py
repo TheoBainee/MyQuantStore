@@ -233,6 +233,10 @@ class Settings(BaseSettings):
     chart_timezone: str = "UTC"
     # Fenêtre des miniatures dashboard (jours calendaires, track 1day Yahoo).
     thumbnail_lookback_days: int = 90
+    # TTL cache mémoire optim paniers chart (portfolio:max-sharpe / min-vol).
+    # 0 = pas de cache (recalcul à chaque get_result). Défaut: 1 jour.
+    # TOML: [chart] pf_optim_cache_ttl_days
+    chart_pf_optim_cache_ttl_days: int = 1
     # Couleurs chandeliers (hex).
     chart_candle_up: str = _DEFAULT_CANDLE_UP
     chart_candle_down: str = _DEFAULT_CANDLE_DOWN
@@ -471,6 +475,13 @@ class Settings(BaseSettings):
     def _portfolio_rf_ttl(cls, v: int) -> int:
         if v < 0:
             raise ValueError("portfolio_rf_cache_ttl_days doit être >= 0")
+        return v
+
+    @field_validator("chart_pf_optim_cache_ttl_days")
+    @classmethod
+    def _chart_pf_optim_ttl(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("chart_pf_optim_cache_ttl_days doit être >= 0")
         return v
 
     @field_validator("portfolio_default_value")
@@ -879,6 +890,9 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
             "chart_timezone": chart.get("timezone", data["chart_timezone"]),
             "thumbnail_lookback_days": chart.get(
                 "thumbnail_lookback_days", data["thumbnail_lookback_days"]
+            ),
+            "chart_pf_optim_cache_ttl_days": chart.get(
+                "pf_optim_cache_ttl_days", data["chart_pf_optim_cache_ttl_days"]
             ),
             "chart_candle_up": chart.get("candle_up", data["chart_candle_up"]),
             "chart_candle_down": chart.get("candle_down", data["chart_candle_down"]),

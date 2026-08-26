@@ -34,9 +34,14 @@ Commande CLI : `myquantstore portfolio …`
 Dashboard section Stocks : boutons **Max Sharpe** / **Min Vol** →
 `/portfolio:max-sharpe` et `/portfolio:min-vol`.
 
-- Optim calculée **au premier accès** (pas au boot, pas de cache TTL).
+- Optim calculée **au premier accès** (pas au boot).
+- Cache mémoire process avec TTL `[chart] pf_optim_cache_ttl_days`
+  (défaut **1** jour ; `0` = recalcul à chaque accès). Après expiration
+  du TTL, le prochain `/api/candles` (ou meta/thumbnail) re-optimise.
 - Série OHLCV : combinaison linéaire des legs sur la **barre de base**
-  (1min ou 1day), puis resample UT ; **rebase 100** à t0.
+  (1min ou 1day), puis resample UT ; **rebase 100** à t0. La série est
+  toujours reconstruite à la demande ; seuls poids / métriques d'optim
+  sont cachés.
 - Invariant : jamais de combo sur barres déjà resamplées.
 
 Flags communs : `--from`, `--to`, `--timescale day|week`, `--rf`, `--log-returns`, `--no-div`, `-i` (répétable), `--export path.parquet|.csv`.

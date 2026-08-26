@@ -134,6 +134,8 @@ mdns = false # myquantstore-chart.local
 # Fenêtre des miniatures SVG du dashboard (jours, agrégé 1day Yahoo).
 # 90 ≈ 3 mois ; 365 ≈ YOY.
 thumbnail_lookback_days = 90
+# TTL (jours) cache mémoire optim paniers chart portfolio:* (0 = off).
+pf_optim_cache_ttl_days = 1
 # Fuseau IANA : affichage chart + interprétation de intraday_begin/end.
 timezone = "UTC"
 # Filtre session intraday (HH:MM murales dans timezone) — les deux ou aucun.

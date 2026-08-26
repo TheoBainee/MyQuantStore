@@ -87,7 +87,7 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
 - CLI complète + chart serveur (dashboard `/` multi-type, miniatures SVG 1day, charts `/{type}:{symbol}`). Couleurs conf : `[chart] candle_up/down` ; overlay `[chart.overlay] overlay_dir` + `[chart.overlay.backtest]` (tx/order buy/sell hex). Rétrocompat `[chart] overlay_dir`. API `/api/overlays`, `/api/overlay/{stem}`.
 - Chart timezone : `[chart] timezone` (IANA, défaut UTC) — affichage axe/tooltip + `intraday_begin/end` en heures murales de cette TZ.
 - **`myquantstore serve`** : API HTTP `query()` (`/v1/health`, `/v1/instruments`, `/v1/query`) — Parquet / Arrow, pas de cascade, pas d'auth v1. Spec : `docs/SERVE.md`.
-- **Portfolio MPT** (`analytics/`, CLI `portfolio`) : panel stocks 1day total-return, corr/cov, optim long-only equal|min-vol|max-sharpe, allocate (lots), frontier (Polars + numpy). Chart lazy `portfolio:max-sharpe`/`min-vol` (combo base puis resample, rebase 100).
+- **Portfolio MPT** (`analytics/`, CLI `portfolio`) : panel stocks 1day total-return, corr/cov, optim long-only equal|min-vol|max-sharpe, allocate (lots), frontier (Polars + numpy). Chart lazy `portfolio:max-sharpe`/`min-vol` (combo base puis resample, rebase 100) ; cache mémoire TTL `[chart] pf_optim_cache_ttl_days` (défaut 1j, `0` = off).
 
 ### Onboarding & schedule (UX install)
 - Templates embarqués : `src/myquantstore/resources/` (`config.minimal.toml`, `config.full.toml`, `env.example`) — accessibles hors clone via `importlib.resources`.
@@ -147,4 +147,3 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
 - Toujours utiliser des messages de commit clairs décrivant les changements + référence à l'agent.
 
 Commence/maintiens par : arborescence propre, pyproject.toml (uv/hatch), config (pydantic+toml), implémentation pipeline + fetchers + storage, tests.
-nce propre, pyproject.toml (uv/hatch), config (pydantic+toml), implémentation pipeline + fetchers + storage, tests.

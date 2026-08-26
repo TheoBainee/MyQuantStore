@@ -174,6 +174,7 @@ port = 8050
 host = "127.0.0.1"
 mdns = false
 thumbnail_lookback_days = 90   # miniatures dashboard (1day Yahoo)
+pf_optim_cache_ttl_days = 1    # TTL cache mémoire optim portfolio:* (0 = off)
 
 [serve]
 port = 8741

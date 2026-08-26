@@ -853,8 +853,9 @@ def _build_parser() -> argparse.ArgumentParser:
             "\n"
             "Paniers MPT (section Stocks) : boutons Max Sharpe / Min Vol →\n"
             "products lazy portfolio:max-sharpe et portfolio:min-vol.\n"
-            "Optim au premier accès, cache mémoire process (pas de TTL) —\n"
-            "indépendant de `myquantstore portfolio` (qui recalcule à chaque run).\n"
+            "Optim au premier accès ; cache mémoire process TTL\n"
+            "[chart] pf_optim_cache_ttl_days (défaut 1 jour ; 0 = off).\n"
+            "Indépendant de `myquantstore portfolio` (recalcul à chaque run).\n"
             "Série = combo des legs sur la barre de base, puis resample, rebase 100.\n"
             "Voir aussi : myquantstore portfolio -h · docs/PORTFOLIO.md"
         ),
@@ -1242,8 +1243,9 @@ def _build_parser() -> argparse.ArgumentParser:
             "    [portfolio] rf_cache_ttl_days, défaut 1 jour).\n"
             "  • chart : boutons Max Sharpe / Min Vol → products lazy\n"
             "    portfolio:max-sharpe et portfolio:min-vol. Optim au premier\n"
-            "    accès, cache mémoire process (pas de TTL) — indépendant de\n"
-            "    cette CLI. Série OHLCV = combo des legs puis resample, rebase 100.\n"
+            "    accès ; cache mémoire TTL [chart] pf_optim_cache_ttl_days\n"
+            "    (défaut 1 jour ; 0 = off) — indépendant de cette CLI.\n"
+            "    Série OHLCV = combo des legs puis resample, rebase 100.\n"
             "\n"
             "Config [portfolio] : lookback, RF, default_value, seeds, min_coverage.\n"
             "Doc détaillée : docs/PORTFOLIO.md"
@@ -1402,7 +1404,8 @@ def _build_parser() -> argparse.ArgumentParser:
                 "Cache : aucun côté CLI (recalcul à chaque run).\n"
                 "Côté chart : les mêmes objectifs min-vol / max-sharpe sont\n"
                 "exposés en products lazy portfolio:min-vol et\n"
-                "portfolio:max-sharpe (cache mémoire process, pas de TTL),\n"
+                "portfolio:max-sharpe (cache mémoire TTL\n"
+                "[chart] pf_optim_cache_ttl_days, défaut 1j),\n"
                 "indépendants de cette commande — myquantstore chart."
             ),
             "epilog": (

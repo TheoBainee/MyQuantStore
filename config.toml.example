@@ -135,6 +135,9 @@ mdns = false # myquantstore-chart.local
 # Fenêtre des miniatures SVG du dashboard (jours, agrégé 1day Yahoo).
 # 90 ≈ 3 mois ; 365 ≈ YOY.
 thumbnail_lookback_days = 90
+# TTL (jours) du cache mémoire process des optim paniers dashboard
+# (portfolio:max-sharpe / portfolio:min-vol). 0 = recalcul à chaque accès.
+pf_optim_cache_ttl_days = 1
 
 [serve]
 # API HTTP query (commande `myquantstore serve`).
