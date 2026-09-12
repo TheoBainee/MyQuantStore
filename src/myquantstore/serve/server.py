@@ -99,7 +99,11 @@ def create_serve_app(settings: Settings) -> FastAPI:
         intraday_begin: str | None = Query(None),
         intraday_end: str | None = Query(None),
         timezone: str | None = Query(
-            None, description="IANA TZ pour intraday (défaut [chart] timezone)"
+            None,
+            description=(
+                "Override IANA (intraday + window_start 1min). "
+                "Défaut: resolve_timezone = [chart] timezone"
+            ),
         ),
         normalize_tick_size: bool = Query(False),
         include_cols: str | None = Query(None),
@@ -164,7 +168,7 @@ def create_serve_app(settings: Settings) -> FastAPI:
                 resolution=resolution,
                 intraday_begin=begin_t,
                 intraday_end=end_t,
-                timezone=timezone or settings.chart_timezone or "UTC",
+                timezone=timezone,
                 adjust_rollover=adjust,
                 normalize_tick_size=normalize_tick_size,
                 no_split=no_split,

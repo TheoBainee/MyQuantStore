@@ -70,6 +70,11 @@ from myquantstore.query.resampler import (
     resample_extraday,
     resample_ohlcv,
 )
+from myquantstore.query.timezone import (
+    ensure_window_start_utc,
+    localize_window_start,
+    resolve_timezone,
+)
 from myquantstore.storage.aggregate_cache import read_aggregate
 
 logger = get_logger("query")
@@ -108,7 +113,7 @@ def query(
     k_minutes: int = 1,
     intraday_begin: time | None = None,
     intraday_end: time | None = None,
-    timezone: str = "UTC",
+    timezone: str | None = None,
     adjust_rollover: bool = False,
     normalize_tick_size: bool = False,
     check_ticksize_accuracy: bool = False,
@@ -131,9 +136,13 @@ def query(
     :param start: Date/time de début (inclusive). Si None, depuis le début.
     :param end: Date/time de fin (inclusive). Si None, jusqu'à la fin.
     :param k_minutes: Rééchantillonnage en k minutes (track ``1min``).
-    :param intraday_begin: Heure de début intraday (HH:MM). Wrap-around supporté.
-    :param intraday_end: Heure de fin intraday (HH:MM).
-    :param timezone: Fuseau IANA pour interpréter ``intraday_begin/end`` (défaut UTC).
+    :param intraday_begin: Heure de début intraday (HH:MM murale dans le fuseau
+        résolu). Wrap-around supporté.
+    :param intraday_end: Heure de fin intraday (HH:MM murale).
+    :param timezone: Override IANA (CLI ``--timezone`` / serve ``?timezone=``).
+        ``None`` = :func:`~myquantstore.query.timezone.resolve_timezone`
+        (conf / futur instrument). ``intraday_*`` et la localisation de
+        ``window_start`` (track 1min) utilisent ce fuseau.
     :param adjust_rollover: Si True, applique l'ajustement (back-adjusted rollover pour futures,
         dividends pour stocks après splits). Non activé par défaut.
     :param normalize_tick_size: Si True, convertit OHLC + settlement en Int32
@@ -193,19 +202,20 @@ def query(
     if is_extraday and normalize_tick_size:
         raise ValueError("normalize_tick_size n'est pas applicable au track extraday (1day).")
 
+    # --- Fuseau (source de vérité unique : query.timezone.resolve_timezone) ---
+    tz = resolve_timezone(settings, instrument, override=timezone)
+
     # --- Lecture du cache agrégé (résolution) ---
     df = read_aggregate(instrument, settings, resolution=res)
+    df = ensure_window_start_utc(df)
 
-    # --- Filtrage temporel (start/end datetime) ---
-    # On strip la timezone des deux côtés (colonne + paramètre) pour comparer naive vs naive.
+    # --- Filtrage temporel (start/end) en UTC aware ---
     if start is not None:
-        start_naive = (
-            start.astimezone(UTC).replace(tzinfo=None) if start.tzinfo is not None else start
-        )
-        df = df.filter(pl.col("window_start").dt.replace_time_zone(None) >= start_naive)
+        start_utc = start.astimezone(UTC) if start.tzinfo is not None else start.replace(tzinfo=UTC)
+        df = df.filter(pl.col("window_start") >= start_utc)
     if end is not None:
-        end_naive = end.astimezone(UTC).replace(tzinfo=None) if end.tzinfo is not None else end
-        df = df.filter(pl.col("window_start").dt.replace_time_zone(None) <= end_naive)
+        end_utc = end.astimezone(UTC) if end.tzinfo is not None else end.replace(tzinfo=UTC)
+        df = df.filter(pl.col("window_start") <= end_utc)
 
     # --- Ajustements de prix (avant filtrage intraday et resample) ---
     # Splits d'abord, puis dividends si --adjust (stocks)
@@ -224,8 +234,7 @@ def query(
             elif chain is not None:
                 df = apply_rollover_adjustment(df, chain)
 
-    # --- Filtrage intraday (par heure du jour, dans timezone) — track 1min only ---
-    tz = timezone or "UTC"
+    # --- Filtrage intraday (heures murales dans tz) — track 1min only ---
     if not is_extraday and intraday_begin is not None and intraday_end is not None:
         df = filter_intraday(df, intraday_begin, intraday_end, timezone=tz)
 
@@ -279,7 +288,7 @@ def query(
             )
         df = df.select(include_cols)
 
-    return df
+    return localize_window_start(df, tz, is_extraday=is_extraday)
 
 
 def _dedup_timestamps(

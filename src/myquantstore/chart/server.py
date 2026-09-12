@@ -54,6 +54,7 @@ from myquantstore.config import Settings
 from myquantstore.instruments import Instrument, InstrumentType
 from myquantstore.logging_setup import get_logger
 from myquantstore.query.reader import query
+from myquantstore.query.timezone import ensure_window_start_utc
 
 logger = get_logger("chart.server")
 
@@ -416,6 +417,7 @@ class ChartDefaults:
         self.tx_sell = tx_sell
         self.order_buy = order_buy
         self.order_sell = order_sell
+        # Affichage frontend ; doit coller à resolve_timezone (passé par le CLI).
         self.timezone = timezone or "UTC"
 
 
@@ -461,7 +463,8 @@ def _query_chart_ohlcv(
         "resolution": resolution,
         "intraday_begin": defaults.intraday_begin if resolution != "1day" else None,
         "intraday_end": defaults.intraday_end if resolution != "1day" else None,
-        "timezone": defaults.timezone if resolution != "1day" else "UTC",
+        # None → query.resolve_timezone (même source que CLI/serve)
+        "timezone": None,
         "normalize_tick_size": defaults.normalize_tick_size if resolution != "1day" else False,
         "adjust_rollover": defaults.adjust_rollover,
         "no_split": defaults.no_split,
@@ -489,9 +492,19 @@ def _prepare_chart_df(df: pl.DataFrame) -> pl.DataFrame:
     Le frontend n'a besoin que de : time, OHLC, volume, candle_count.
     On élimine les colonnes ``Categorical`` (non supportées par apache-arrow JS)
     et on caste les timestamps en ``ms`` + le volume en ``Int32``.
+
+    ``window_start`` peut être tz-aware (sortie ``query``) : on ramène en UTC
+    naive ms pour que ``Date.getTime()`` côté JS soit l'instant absolu.
     """
+    work = ensure_window_start_utc(df)
+    time_expr = (
+        pl.col("window_start")
+        .dt.replace_time_zone(None)
+        .cast(pl.Datetime("ms"))
+        .alias("time")
+    )
     select_exprs: list[pl.Expr] = [
-        pl.col("window_start").cast(pl.Datetime("ms")).alias("time"),
+        time_expr,
         pl.col("open").cast(pl.Float64),
         pl.col("high").cast(pl.Float64),
         pl.col("low").cast(pl.Float64),
@@ -505,7 +518,7 @@ def _prepare_chart_df(df: pl.DataFrame) -> pl.DataFrame:
         select_exprs.append(pl.col("candle_count").cast(pl.Int32))
 
     # query() déduplique déjà les timestamps de roll (défaut).
-    return df.select(select_exprs).sort("time")
+    return work.select(select_exprs).sort("time")
 
 
 def _render_dashboard_html(

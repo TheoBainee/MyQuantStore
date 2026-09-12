@@ -112,6 +112,46 @@ level = "DEBUG"
         result = main([])
         assert result == 0
 
+    def test_verbose_flag_parsed(self):
+        """`-v` / `--verbose` racine sont acceptés avant la sous-commande."""
+        from myquantstore.cli import _build_parser
+
+        parser = _build_parser()
+        assert parser.parse_args(["-v", "config"]).verbose is True
+        assert parser.parse_args(["--verbose", "config"]).verbose is True
+        assert parser.parse_args(["config"]).verbose is False
+
+    def test_verbose_forces_debug_logging(self, tmp_path, monkeypatch):
+        """`-v` force setup_logging(DEBUG) même si conf = INFO."""
+        env_file = tmp_path / ".env"
+        env_file.write_text("MASSIVE_API_KEY=test_key\n", encoding="utf-8")
+        (tmp_path / "config.toml").write_text(
+            """
+[instruments]
+futures = ["ES"]
+
+[logging]
+level = "INFO"
+""",
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(tmp_path)
+
+        calls: list[dict[str, object]] = []
+
+        def _fake_setup_logging(*, level: str, log_dir: str):
+            calls.append({"level": level, "log_dir": log_dir})
+            return None
+
+        monkeypatch.setattr("myquantstore.cli.setup_logging", _fake_setup_logging)
+
+        assert main(["-v", "config"]) == 0
+        assert calls and calls[-1]["level"] == "DEBUG"
+
+        calls.clear()
+        assert main(["config"]) == 0
+        assert calls and calls[-1]["level"] == "INFO"
+
     def test_status_command_empty(self, tmp_path, monkeypatch, capsys):
         """`myquantstore status` sur un environnement vide ne crash pas."""
         env_file = tmp_path / ".env"

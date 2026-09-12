@@ -62,6 +62,48 @@ class TestQuery:
         df = query(es_instrument, tmp_settings, sample_chain)
         assert df.height == 3
         assert "window_start" in df.columns
+        # Sortie toujours timezone-aware (UTC par défaut conf)
+        assert df.schema["window_start"].time_zone == "UTC"
+
+    def test_query_localizes_window_start_to_timezone(
+        self, tmp_settings, es_instrument, sample_chain, setup_aggregate
+    ):
+        """1min : window_start dans --timezone ; instant UTC inchangé."""
+        df = query(
+            es_instrument,
+            tmp_settings,
+            sample_chain,
+            timezone="America/Chicago",
+        )
+        assert df.schema["window_start"].time_zone == "America/Chicago"
+        # 09:30 UTC → 04:30 CDT (juin)
+        first = df.sort("window_start")["window_start"][0]
+        assert first.hour == 4
+        assert first.minute == 30
+
+    def test_query_1day_window_start_stays_utc(self, tmp_settings, es_instrument, sample_chain):
+        from myquantstore.instruments import RESOLUTION_1DAY
+        from myquantstore.pipeline.aggregator import aggregate
+        from myquantstore.storage.raw_dumps import save_raw_dump
+
+        ts = [datetime(2025, 6, 1, 0, 0, 0, tzinfo=UTC)]
+        save_raw_dump(
+            _make_df("ES", ts, [4500.00]),
+            es_instrument,
+            "ES",
+            "20250601T000000",
+            tmp_settings,
+            resolution=RESOLUTION_1DAY,
+        )
+        aggregate(es_instrument, tmp_settings, resolution=RESOLUTION_1DAY)
+        df = query(
+            es_instrument,
+            tmp_settings,
+            sample_chain,
+            resolution=RESOLUTION_1DAY,
+            timezone="America/Chicago",
+        )
+        assert df.schema["window_start"].time_zone == "UTC"
 
     def test_query_with_start_filter(
         self, tmp_settings, es_instrument, sample_chain, setup_aggregate

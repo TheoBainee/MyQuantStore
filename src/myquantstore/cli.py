@@ -25,6 +25,8 @@ Commandes disponibles :
 (symbole présent dans plusieurs types), utiliser ``--type``. On peut aussi
 passer la clé complète ``type:symbol`` (ex: ``futures:ES``).
 
+Flag racine ``-v`` / ``--verbose`` : force le logging DEBUG (override conf).
+
 Utilise ``argparse`` (stdlib). Autocompletion shell via ``argcomplete`` (optionnel).
 """
 
@@ -176,7 +178,8 @@ def main(argv: list[str] | None = None) -> int:
         console.print(f"[red]Erreur de configuration:[/red] {e}")
         return 1
 
-    setup_logging(level=settings.log_level, log_dir=settings.log_dir)
+    log_level = "DEBUG" if getattr(args, "verbose", False) else settings.log_level
+    setup_logging(level=log_level, log_dir=settings.log_dir)
 
     if args.command == "config":
         if getattr(args, "config_command", None) == "add":
@@ -319,6 +322,12 @@ def _build_parser() -> argparse.ArgumentParser:
             "Docs : README.md · docs/TECHNICAL_DESIGN.md · docs/MULTI_TYPE.md · docs/PORTFOLIO.md"
         ),
         formatter_class=_HELP_FMT,
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Force le logging DEBUG (override [logging] level de la conf)",
     )
     subparsers = parser.add_subparsers(
         dest="command",
@@ -827,7 +836,8 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="IANA",
         help=(
-            "Fuseau pour --intraday-begin/end (défaut: [chart] timezone). "
+            "Override IANA pour intraday + localisation window_start 1min "
+            "(défaut: resolve_timezone = [chart] timezone). "
             "Ex: America/New_York, Europe/Paris, UTC"
         ),
     )
@@ -2291,7 +2301,7 @@ def _cmd_query(settings: Settings, args: argparse.Namespace) -> int:
             no_split=args.no_split,
             dedup_timestamps=not args.no_dedup_timestamps,
             include_cols=_parse_include_cols(getattr(args, "include_cols", None)),
-            timezone=getattr(args, "timezone", None) or settings.chart_timezone or "UTC",
+            timezone=getattr(args, "timezone", None),
             forward_fill=args.forward_fill,
         )
     except ValueError as e:
@@ -2528,6 +2538,7 @@ def _cmd_chart(settings: Settings, args: argparse.Namespace) -> int:
 
     from myquantstore.chart.server import ChartDefaults, run_server
     from myquantstore.instruments import RESOLUTION_1DAY, RESOLUTION_1MIN
+    from myquantstore.query.timezone import resolve_timezone
     from myquantstore.tickers.yahoo_map import YAHOO_DAILY_TYPES
 
     # Résoudre l'instrument par défaut
@@ -2700,7 +2711,7 @@ def _cmd_chart(settings: Settings, args: argparse.Namespace) -> int:
         tx_sell=settings.chart_tx_sell,
         order_buy=settings.chart_order_buy,
         order_sell=settings.chart_order_sell,
-        timezone=settings.chart_timezone,
+        timezone=resolve_timezone(settings),
     )
 
     start_url = (

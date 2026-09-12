@@ -652,9 +652,16 @@ La série 1-timestamp = 1-barre est un choix de **`query()`** (`dedup_timestamps
 
 La fonction `query` accepte plusieurs flags et paramètres de transformation :
 
-- `start` / `end` (`--start` / `--end`) : filtres temporels. Les datetime sont normalisés en timezone-naive UTC avant comparaison avec `window_start` (qui est `Datetime[ns]` sans timezone en production). Cette normalisation utilise `dt.replace_time_zone(None)` sur la colonne et `astimezone(UTC).replace(tzinfo=None)` sur le paramètre, ce qui permet de comparer des données tz-aware (tests) ou naive (production) sans erreur.
+- `start` / `end` (`--start` / `--end`) : filtres temporels. Comparaison en **UTC aware** : `query()` normalise d'abord `window_start` via `ensure_window_start_utc` (stockage naive = UTC) ; les bornes naive sont interprétées comme UTC.
+- `timezone` (`--timezone` / serve `?timezone=`) : override IANA. **Résolution centralisée** dans `query/timezone.py` → `resolve_timezone(settings, instrument, override=…)` :
+  1. override explicite
+  2. TZ instrument (*stub* futur)
+  3. `[chart] timezone` (`settings.chart_timezone`)
+  4. `UTC`
+  CLI / serve / chart **déléguent** (pas de `or settings.chart_timezone` local). `intraday_begin/end` = heures murales dans ce fuseau.
+- **Sortie `window_start`** (`localize_window_start`) : track `1min` → `Datetime[ns, <tz résolu>]` ; track `1day` → toujours `Datetime[ns, UTC]` (minuit séance). Stockage dumps/agrégats reste naive UTC.
 - `k_minutes` (`--timescale-unit` + `--timescale-nb`) : rééchantillonnage à la volée en candles k-min (cf §9bis).
-- `intraday_begin` / `intraday_end` (`--intraday-begin` / `--intraday-end`) : filtrage par heure du jour (cf §9bis).
+- `intraday_begin` / `intraday_end` (`--intraday-begin` / `--intraday-end`) : filtrage par heure du jour dans le fuseau résolu (cf §9bis).
 - `adjust_rollover` (`--adjust`) : futures = back-adjusted rollover ; stocks =
   ajustement dividend (après splits). Voir `query/adjust.py`.
 - `no_split` (`--no-split`) : stocks — désactive l'ajustement split (ON par défaut).
@@ -869,6 +876,8 @@ Les 3 helpers se déclenchent uniquement si `level >= DEBUG` (via `isEnabledFor`
 
 ### 12.1 Commandes
 
+Flag racine : `-v` / `--verbose` (avant la sous-commande) force le logging DEBUG, override `[logging] level`.
+
 | Commande | Description | Flags |
 |---|---|---|
 | `myquantstore setup-key` | Demande la clé API (prompt masqué), crée `.env` si absent. Refuse d'écraser une clé existante sans confirmation. | `--base-url` |
@@ -1005,7 +1014,7 @@ Le frontend chart n'a besoin que de : `time`, OHLC, `volume`, `candle_count`. La
 
 **Zoom cap** : `subscribeVisibleLogicalRangeChange` bloque le dézoom au-delà de `max_visible_candles` candles visibles (butée, pas résolution cap).
 
-**`before` param** : le frontend envoie une date ISO 8601 avec timezone (ex: `2024-07-22T00:00:00.000Z`). Le serveur parse en UTC, et `query()` normalise en timezone-naive via `dt.replace_time_zone(None)` sur la colonne et `astimezone(UTC).replace(tzinfo=None)` sur le paramètre.
+**`before` param** : le frontend envoie une date ISO 8601 avec timezone (ex: `2024-07-22T00:00:00.000Z`). Le serveur parse en UTC ; `query()` compare en UTC aware (`ensure_window_start_utc`). `_prepare_chart_df` ramène `window_start` en UTC naive ms pour Arrow / Lightweight Charts (instant absolu) ; l'affichage mural reste `resolve_timezone` via `Intl` côté JS.
 
 ### 12bis.5 Frontend (`chart.html` + `dashboard.html`)
 

@@ -69,8 +69,9 @@ def _load_leg_ohlcv(
     if has_vol:
         cols.append("volume")
     out = df.select(cols)
-    # naive timestamps pour join
-    out = out.with_columns(pl.col("window_start").dt.replace_time_zone(None))
+    from myquantstore.query.timezone import window_start_to_utc_naive
+
+    out = window_start_to_utc_naive(out)
     return out.sort("window_start")
 
 

@@ -221,6 +221,8 @@ myquantstore config add TSLA NVDA                         # lookup type via cach
 
 ### Commandes CLI
 
+Flag racine : `myquantstore -v|--verbose <commande>` force le logging DEBUG (override `[logging] level`).
+
 | Commande | Description |
 |---|---|
 | `myquantstore init [--minimal\|--full] [-k KEY]` | Bootstrap XDG (config + dirs + clé optionnelle) |
