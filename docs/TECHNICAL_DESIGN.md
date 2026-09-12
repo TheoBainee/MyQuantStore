@@ -1109,6 +1109,17 @@ inatteignable depuis un graph 5min. La sélection courante **reste appliquée m�
 l'UT : pas de refetch au changement d'UT. Filtres et dernière sélection persistés dans
 `localStorage['myquantstore-overlay-filters']`.
 
+**Garde `[hidden]` porteuse — piège CSS.** L'ouverture / fermeture du popover et l'affichage du
+picker passent par la propriété `hidden`, qui ne masque que via la règle `[hidden] {display:none}`
+de la feuille de style **UA** — surclassée par n'importe quelle déclaration `display` d'**auteur**
+(l'origine auteur bat l'origine UA, indépendamment de la spécificité). Or `#overlay-picker` et
+`#overlay-popover` posent `display: flex`. D'où la règle
+`#overlay-picker[hidden], #overlay-popover[hidden] { display: none; }` — spécificité (1 ID + 1
+attribut) contre (1 ID), donc sans `!important`. **Sans elle le popover reste ouvert en
+permanence** et `closeOverlayPopover()` n'a aucun effet visuel (régression constatée puis
+corrigée). Couverte par `test_garde_hidden_presente`. Tout nouvel élément piloté par `hidden` qui
+reçoit un `display` d'auteur doit être ajouté à cette garde.
+
 **Préparation au multi-overlay.** La sélection est un **tableau** `selectedOverlayKeys`, les
 payloads sont indexés par clé dans une `Map`, et `parseOverlayPayloads()` itère sur N overlays
 en attribuant à chacun sa paire de couleurs via `overlayColors(index)`. Aujourd'hui : une

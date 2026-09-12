@@ -44,6 +44,10 @@
             background: #131722; border: 1px solid #363a45; border-radius: 6px;
             box-shadow: 0 8px 24px rgba(0, 0, 0, .5);
         }
+        /* PORTEUR — l'attribut `hidden` ne masque que via `[hidden] {display:none}` de la
+           feuille UA, que tout `display` d'auteur surclasse. Sans cette garde, le popover
+           reste ouvert en permanence et closeOverlayPopover() n'a aucun effet visuel. */
+        #overlay-picker[hidden], #overlay-popover[hidden] { display: none; }
         #overlay-popover .ov-controls {
             padding: 8px; border-bottom: 1px solid #2a2e39;
             display: flex; flex-direction: column; gap: 8px;

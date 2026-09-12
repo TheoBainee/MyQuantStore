@@ -486,6 +486,20 @@ class TestOverlaySelectorMarkup:
         # Le select natif plat a disparu.
         assert 'id="overlay-select"' not in html
 
+    def test_garde_hidden_presente(self, chart_setup):
+        """Sans cette garde CSS, le popover reste ouvert en permanence.
+
+        L'attribut `hidden` ne masque que via `[hidden] {display:none}` de la feuille UA,
+        surclassée par le `display: flex` d'auteur posé sur #overlay-picker / #overlay-popover.
+        Régression constatée en prod : le sélecteur ne pouvait plus se fermer.
+        """
+        settings, instruments, chains, defaults = chart_setup
+        app = create_chart_app(settings, instruments, chains, defaults)
+        client = TestClient(app)
+        html = client.get("/futures:ES").text
+        assert "#overlay-picker[hidden]" in html
+        assert "#overlay-popover[hidden]" in html
+
     def test_pas_de_chip_ut_inferieure_ni_toutes(self, chart_setup):
         """Seules `UT >= graph` et `UT = graph` existent (décision produit)."""
         settings, instruments, chains, defaults = chart_setup
