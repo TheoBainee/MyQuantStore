@@ -372,18 +372,26 @@ def _write_sample_overlay(root: Path, *, instrument: str = "futures:ES") -> None
     back.mkdir(parents=True)
     stem = "ES_120_180"
     meta = {
-        "long_15_25_50": {
-            "instrument": instrument,
+        "mqs_overlay": 2,
+        "backtest_type": "cth_factor",
+        "instrument": instrument,
+        "timeframe": {"unit": "min", "nb": 1},
+        "shared": {
             "ticksize": 0.25,
             "cth_open": 120,
             "cth_close": 180,
-            "is_short": False,
-            "entry_factor": 15,
-            "factor": 25,
-            "stop_factor": 50,
             "session": {"tz": "America/Chicago", "begin": "04:00", "end": "15:30"},
-            "extra": {},
-        }
+        },
+        "backtests": {
+            "long_15_25_50": {
+                "params": {
+                    "is_short": False,
+                    "entry_factor": 15,
+                    "factor": 25,
+                    "stop_factor": 50,
+                }
+            }
+        },
     }
     (back / f"{stem}.meta.json").write_text(json.dumps(meta), encoding="utf-8")
     pl.DataFrame(
@@ -457,6 +465,38 @@ class TestChartColorInjection:
         assert "__TIMEZONE__" not in resp.text
 
 
+class TestOverlaySelectorMarkup:
+    """Le combobox de sélection d'overlay remplace le `<select>` natif."""
+
+    def test_html_expose_le_combobox(self, chart_setup):
+        settings, instruments, chains, defaults = chart_setup
+        app = create_chart_app(settings, instruments, chains, defaults)
+        client = TestClient(app)
+        html = client.get("/futures:ES").text
+        for marker in (
+            'id="overlay-picker"',
+            'id="overlay-trigger"',
+            'id="overlay-search"',
+            'id="overlay-type"',
+            'id="overlay-tooltip"',
+            'data-ut="gte"',
+            'data-ut="eq"',
+        ):
+            assert marker in html, marker
+        # Le select natif plat a disparu.
+        assert 'id="overlay-select"' not in html
+
+    def test_pas_de_chip_ut_inferieure_ni_toutes(self, chart_setup):
+        """Seules `UT >= graph` et `UT = graph` existent (décision produit)."""
+        settings, instruments, chains, defaults = chart_setup
+        app = create_chart_app(settings, instruments, chains, defaults)
+        client = TestClient(app)
+        html = client.get("/futures:ES").text
+        assert 'data-ut="lte"' not in html
+        assert 'data-ut="all"' not in html
+        assert html.count("data-ut=") == 2
+
+
 class TestOverlayApi:
     def test_list_empty_without_dir(self, chart_setup):
         settings, instruments, chains, defaults = chart_setup
@@ -464,7 +504,10 @@ class TestOverlayApi:
         client = TestClient(app)
         resp = client.get("/api/overlays", params={"product": "futures:ES"})
         assert resp.status_code == 200
-        assert resp.json() == []
+        body = resp.json()
+        assert body["overlays"] == []
+        assert body["skipped"] == []
+        assert body["facets"]["types"] == []
 
     def test_list_and_load(self, chart_setup, tmp_path):
         settings, instruments, chains, defaults = chart_setup
@@ -477,12 +520,18 @@ class TestOverlayApi:
         listed = client.get("/api/overlays", params={"product": "futures:ES"})
         assert listed.status_code == 200
         body = listed.json()
-        assert len(body) == 1
-        assert body[0]["stem"] == "ES_120_180"
-        assert body[0]["ids"] == ["long_15_25_50"]
+        assert len(body["overlays"]) == 1
+        row = body["overlays"][0]
+        assert row["stem"] == "ES_120_180"
+        assert row["id"] == "long_15_25_50"
+        assert row["key"] == "ES_120_180|long_15_25_50"
+        assert row["backtest_type"] == "cth_factor"
+        assert row["timeframe"] == {"unit": "min", "nb": 1, "minutes": 1}
+        assert body["facets"]["types"] == [{"name": "cth_factor", "count": 1}]
+        assert body["skipped"] == []
 
         other = client.get("/api/overlays", params={"product": "futures:NQ"})
-        assert other.json() == []
+        assert other.json()["overlays"] == []
 
         loaded = client.get("/api/overlay/ES_120_180")
         assert loaded.status_code == 200

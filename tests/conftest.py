@@ -7,6 +7,7 @@ Fournit :
 - ``sample_aggs_df`` : DataFrame Polars de chandeliers OHLCV simulés.
 - ``sample_chain`` : RolloverChain construite à partir de sample_contracts_df.
 - ``respx_mock`` : fixture fournie par respx pour mocker httpx.
+- ``_clear_overlay_cache`` (autouse) : vide le cache de catalogue overlay.
 """
 
 from __future__ import annotations
@@ -20,6 +21,14 @@ import pytest
 from myquantstore.config import Settings
 from myquantstore.contracts.rollover import RolloverChain
 from myquantstore.instruments import Instrument, InstrumentType
+
+
+@pytest.fixture(autouse=True)
+def _clear_overlay_cache() -> None:
+    """Vide le cache de catalogue overlay (mémoïsé par dossier) entre les tests."""
+    from myquantstore.chart.overlay import clear_catalog_cache
+
+    clear_catalog_cache()
 
 
 @pytest.fixture(autouse=True)

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date
+from pathlib import Path
+from typing import Any
 
 import polars as pl
 
@@ -479,3 +482,53 @@ class TestFetchExitCode:
             no_cascade=True,
         )
         assert _cmd_fetch(tmp_settings, args) == 0
+
+
+class TestDoctorOverlays:
+    """`doctor overlays` : validation du dossier overlays contre le contrat v2."""
+
+    @staticmethod
+    def _write(root: Path, stem: str, meta: dict[str, Any]) -> None:
+        back = root / "Backtests"
+        back.mkdir(parents=True, exist_ok=True)
+        (back / f"{stem}.meta.json").write_text(json.dumps(meta), encoding="utf-8")
+
+    @staticmethod
+    def _meta_v2() -> dict[str, Any]:
+        return {
+            "mqs_overlay": 2,
+            "backtest_type": "cth_factor",
+            "instrument": "futures:YM",
+            "timeframe": {"unit": "min", "nb": 15},
+            "shared": {"ticksize": 1.0},
+            "backtests": {
+                "short_20": {"params": {"is_short": True, "entry_factor": 20}},
+                "long_50": {"params": {"is_short": False, "entry_factor": 50}},
+            },
+        }
+
+    def test_catalogue_valide_exit_0(self, tmp_path, capsys):
+        self._write(tmp_path, "ym", self._meta_v2())
+        assert main(["doctor", "overlays", "--overlay-dir", str(tmp_path)]) == 0
+        out = capsys.readouterr().out
+        assert "futures:YM" in out
+        assert "cth_factor" in out
+        assert "2 backtest(s)" in out
+
+    def test_fichier_non_v2_exit_1(self, tmp_path, capsys):
+        """Le legacy doit être signalé explicitement pendant la migration du producteur."""
+        self._write(tmp_path, "legacy", {"short_20_35_0": {"instrument": "futures:YM"}})
+        assert main(["doctor", "overlays", "--overlay-dir", str(tmp_path)]) == 1
+        out = capsys.readouterr().out
+        assert "SKIP" in out
+        assert "legacy.meta.json" in out
+
+    def test_dossier_backtests_absent_exit_1(self, tmp_path, capsys):
+        assert main(["doctor", "overlays", "--overlay-dir", str(tmp_path)]) == 1
+        assert "introuvable" in capsys.readouterr().out
+
+    def test_doctor_nu_reste_fonctionnel(self, capsys):
+        """L'ajout de sous-commandes ne doit pas casser `doctor` sans argument."""
+        rc = main(["doctor"])
+        assert rc in (0, 1)
+        assert "myquantstore doctor" in capsys.readouterr().out

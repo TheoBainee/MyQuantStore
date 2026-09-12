@@ -44,7 +44,7 @@ from myquantstore.analytics.portfolio_service import (
 )
 from myquantstore.analytics.synthetic import build_portfolio_ohlcv
 from myquantstore.chains import InstrumentChain
-from myquantstore.chart.overlay import list_overlays, load_overlay
+from myquantstore.chart.overlay import build_catalog, load_overlay
 from myquantstore.chart.thumbnails import (
     build_dashboard_cards,
     get_thumbnail_svg,
@@ -310,8 +310,8 @@ def create_chart_app(
         }
 
     @app.get("/api/overlays")
-    async def get_overlays(product: str = Query(...)) -> list[dict[str, Any]]:
-        return list_overlays(settings.overlay_dir, product)
+    async def get_overlays(product: str = Query(...)) -> dict[str, Any]:
+        return build_catalog(settings.overlay_dir, product)
 
     @app.get("/api/overlay/{stem}")
     async def get_overlay(

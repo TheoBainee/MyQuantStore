@@ -971,6 +971,8 @@ Le serveur est lancé via `uvicorn` (bloquant). Un seul serveur sert tous les pr
 | `GET /api/candles` | Arrow IPC | Chandeliers OHLCV en binaire (Polars `write_ipc` → apache-arrow JS `tableFromIPC`) |
 | `GET /api/meta` | JSON | Métadonnées : `tick_size`, `first_date`, `last_date`, `total_candles` |
 | `GET /api/thumbnail/{key}.svg` | SVG | Sparkline close 1day sur `thumbnail_lookback_days` (défaut 90). |
+| `GET /api/overlays` | JSON | Catalogue overlay du produit : `{overlays, facets, skipped}`, une ligne par `(stem, backtest_id)`. Voir §12bis.8. |
+| `GET /api/overlay/{stem}` | JSON | Payload d'un backtest (`?id=` = backtest_id ; défaut : le premier) : métadonnées + `transactions` + `orders`. |
 
 **Paramètres de `/api/candles`** :
 
@@ -1036,7 +1038,7 @@ Templates HTML avec paramètres injectés par string replacement / JSON. Les JS 
 - **Toolbar** : bouton maison → `/`, sélecteur d'UT (dropdown 1min→1w), bouton "Ajuster" (fit content), barre d'info (product, count, date range, UT).
 - **Loading overlay** : `pointer-events: none` sur le chart pendant le chargement (évite les erreurs crosshair sur données vides).
 
-**Sélecteur d'UT** : le changement d'UT via le dropdown appelle `changeTimescale()` qui reset l'état (`allCandles = []`, `oldestTimestamp = null`, `noMoreData = false`) et relance `loadInitial()`. L'UT est sauvegardée dans `localStorage` (survit aux F5).
+**Sélecteur d'UT** : le changement d'UT via le dropdown appelle `changeTimescale()` qui reset l'état (`allCandles = []`, `oldestTimestamp = null`, `noMoreData = false`) et relance `loadInitial()`. L'UT est sauvegardée dans `localStorage` (survit aux F5). `changeTimescale()` rappelle ensuite `renderOverlayList()` : les chips de relation UT du sélecteur d'overlay sont relatives à l'UT du graph et doivent être réévaluées (§12bis.8).
 
 **Parsing Arrow IPC** : `parseArrowIpc()` lit le buffer, extrait les colonnes via `table.getChildAt(i)`, convertit `time` (Date) → timestamp UNIX en secondes, skip les candles avec valeurs null (avec `console.warn`), trie par time ascendant puis `dedupeCandlesByTime()` (exigé par Lightweight Charts).
 
@@ -1047,6 +1049,75 @@ Templates HTML avec paramètres injectés par string replacement / JSON. Les JS 
 ### 12bis.7 License TradingView
 
 Lightweight Charts est sous Apache-2.0 avec attribution requise. Le logo TradingView est affiché sur le chart via `attributionLogo: true`, ce qui satisfait l'obligation de licence. Voir fichier `chart/NOTICE`.
+
+### 12bis.8 Overlays backtest — indexation et navigation
+
+Contrat du format `meta.json` : **`docs/OVERLAYS.md`** (source de vérité, lue par le service
+producteur). Ici : les choix d'architecture.
+
+**v2 strict, sans rétrocompat.** `chart/overlay.py` valide `mqs_overlay: 2`, `backtest_type`,
+`instrument`, `timeframe` et `backtests`. Un fichier non conforme lève `OverlayFormatError`,
+est ignoré et remonte dans `skipped` avec sa raison — il ne fait pas tomber le catalogue.
+Exposer `skipped` plutôt que de filtrer en silence est délibéré : pendant la migration du
+producteur, l'UI et `doctor overlays` montrent ce qui est rejeté et pourquoi.
+
+**Maille du catalogue : une ligne par `(stem, backtest_id)`**, clé stable `key = "{stem}|{id}"`
+(le stem est validé par `^[A-Za-z0-9_.-]+$` et ne peut donc pas contenir `|` — le premier
+séparateur marque la frontière). L'ancienne maille (une ligne par stem + tableau `ids`)
+forçait le frontend à faire le produit cartésien lui-même ; ce n'est pas la maille de
+recherche. `/api/overlays` renvoie donc **un objet** et non une liste : changement de contrat
+assumé, le frontend chart est le seul consommateur et il est livré dans le même commit.
+
+**Params effectifs** = `shared` ∪ `params` (l'entrée gagne), aplatis en chemins pointés
+(`session.tz`). Scalaires conservés ; listes et types exotiques stringifiés — consultables au
+tooltip, hors comparaison numérique. Le dict est **libre** : les axes d'optimisation ne sont
+pas connus de MQS, ils sont découverts en lisant le disque.
+
+**UT canonicalisée** en `minutes` avec le vocabulaire du sélecteur d'UT (`min`/`hour`/`day`/
+`week`), pas un dialecte séparé. C'est `minutes` qui rend les UT comparables entre elles et
+avec celle du graph.
+
+**Labels calculés côté serveur.** Un param est *saillant* s'il prend ≥ 2 valeurs distinctes
+dans son groupe `backtest_type` (tous stems confondus), ou s'il est absent de certaines
+entrées. Le label est `type · UT · saillants` ; les invariants du groupe (`ticksize`,
+`cth_open`, `session.tz`) ne vont qu'au tooltip. La salience exige le catalogue complet du
+produit — d'où un calcul serveur plutôt que client, ce qui rend aussi l'API exploitable en
+programmatique. `label_params` dans le fichier force la sélection et l'ordre.
+
+**Cache** : parsing mémoïsé par dossier `Backtests/`, invalidé sur l'empreinte
+`(nom, mtime_ns, taille)` des `*.meta.json` via `os.scandir`. Choix d'une empreinte plutôt
+qu'un TTL : réécrire un fichier suffit à le reprendre en compte, et **aucun knob de config
+supplémentaire** n'est nécessaire. Le cache porte les entrées parsées tous produits confondus,
+la vue par produit (filtre + salience + facettes) est recalculée à chaque appel — le parsing
+JSON est le coût dominant, pas les opérations sur dicts. `clear_catalog_cache()` pour les tests.
+
+**Filtrage côté client.** Le catalogue part en une fois ; recherche, type et relation UT sont
+évalués dans le navigateur (latence de frappe nulle). Pas de query params de filtre sur
+l'endpoint.
+
+**Relation UT — sémantique.** Deux chips seulement : `UT ≥ graph` (défaut) et `UT = graph`.
+`≥` est la direction **non lossy** : un backtest 15min affiché sur un graph 1min place chaque
+event sur sa candle exacte, tandis qu'un backtest 1min sur un graph 15min écrase jusqu'à 15
+events sur la même candle via `snapTime()`. La direction inverse (`UT ≤ graph`) et le
+« toutes UT » ont été **écartés volontairement**. La joignabilité est assurée autrement : une
+section repliable « Hors filtre UT » en bas de liste, sans quoi un backtest 1min serait
+inatteignable depuis un graph 5min. La sélection courante **reste appliquée même hors filtre**
+(⚠ sur le déclencheur) : changer l'UT ne retire pas le calque sous les pieds de l'utilisateur.
+
+**Découplage fetch / rendu.** `fetchOverlayCatalog` (une fois, dans `initOverlays()`) vs
+`renderOverlayList()` (à chaque changement de filtre ou d'UT). Le catalogue est indépendant de
+l'UT : pas de refetch au changement d'UT. Filtres et dernière sélection persistés dans
+`localStorage['myquantstore-overlay-filters']`.
+
+**Préparation au multi-overlay.** La sélection est un **tableau** `selectedOverlayKeys`, les
+payloads sont indexés par clé dans une `Map`, et `parseOverlayPayloads()` itère sur N overlays
+en attribuant à chacun sa paire de couleurs via `overlayColors(index)`. Aujourd'hui : une
+entrée aux couleurs de `[chart.overlay.backtest]`. Demain : N entrées à palette assignée, sans
+évolution d'API (`/api/overlay/{stem}` reste appelé N fois en parallèle). Le rendu markers /
+canvas consomme déjà des listes plates.
+
+**Rendu = calque pur** : sélectionner un overlay ne recharge pas les chandeliers et ne déplace
+pas la vue (pas de jump pan).
 
 ---
 

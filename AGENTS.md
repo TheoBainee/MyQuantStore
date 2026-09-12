@@ -85,6 +85,29 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
   `--end YYYY-MM-DD` = fin de journée inclusive (pas minuit). `--check-ticksize-accuracy` exit 1 si ERREUR.
   `--forward-fill` / `query(..., forward_fill=True)` / serve `?forward_fill=true` / chart `--forward-fill` : opt-in, après resample (même sémantique).
 - CLI complète + chart serveur (dashboard `/` multi-type, miniatures SVG 1day, charts `/{type}:{symbol}`). Couleurs conf : `[chart] candle_up/down` ; overlay `[chart.overlay] overlay_dir` + `[chart.overlay.backtest]` (tx/order buy/sell hex). Rétrocompat `[chart] overlay_dir`. API `/api/overlays`, `/api/overlay/{stem}`. Lazy-load : API `before` inclusive → client filtre `time < oldest` + dédup avant `setData`. Lib vendored lightweight-charts ≥ 5.2.1 (5.2.0 : « Value is null » au setData multi-séries pendant hover, #2044).
+- **Overlays backtest v2** — contrat : `docs/OVERLAYS.md` (source de vérité du format).
+  `meta.json` **v2 strict, aucune rétrocompat legacy** : `mqs_overlay: 2`, `backtest_type`,
+  `instrument`, `timeframe: {unit, nb}` obligatoires + `backtests: {id: {params}}`, `shared`
+  et `label_params` optionnels. Un fichier non conforme est **ignoré et listé** (`skipped`),
+  jamais fatal au catalogue.
+  `backtest_type` regroupe une optimisation (valeur libre, inconnue à l'avance) ; `params`
+  est un dict libre découvert au scan disque, aplati en chemins pointés (`session.tz`).
+  `timeframe` = UT de calcul, canonicalisée en `minutes` (`min`/`hour`/`day`/`week`, même
+  vocabulaire que le sélecteur d'UT).
+  `/api/overlays` renvoie **un objet** `{overlays, facets, skipped}` — une ligne par
+  `(stem, id)` avec `key`, `label` et `salient`, pas une liste par stem. Labels calculés
+  serveur : params **saillants** = ceux qui varient dans un même `backtest_type` (les
+  invariants restent au tooltip). Cache mémoïsé par dossier, invalidé sur
+  `(nom, mtime_ns, taille)`.
+  Sélecteur chart : combobox popover (recherche par tokens, sélecteur de type, chips
+  `UT ≥ graph` par défaut et `UT = graph` — **pas** de `UT ≤ graph` ni `toutes UT`, décision
+  produit), section repliable « Hors filtre UT » pour la joignabilité, tooltip params au
+  survol. Sélection courante conservée même hors filtre. `changeTimescale()` **doit**
+  rappeler `renderOverlayList()` (chips relatives à l'UT du graph).
+  Sélection = **tableau** `selectedOverlayKeys` + payloads indexés par clé et rendu itératif :
+  le multi-overlay s'ajoute sans refonte ni évolution d'API.
+  Validation producteur : `myquantstore doctor overlays [--overlay-dir …]`, lecture seule,
+  exit 1 si un fichier est rejeté.
 - Timezone centralisée : `query/timezone.py` → `resolve_timezone(settings, instrument, override=…)`
   (override CLI/serve → futur TZ/instrument → `[chart] timezone` → UTC).
   CLI / serve / chart délèguent (pas de résolution locale).
@@ -135,7 +158,7 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
 
 ### Documentation
 - https://massive.com/docs/llms.txt
-- README.md, docs/TECHNICAL_DESIGN.md, docs/MULTI_TYPE.md, docs/PORTFOLIO.md, docs/IMPROVEMENTS.md
+- README.md, docs/TECHNICAL_DESIGN.md, docs/MULTI_TYPE.md, docs/PORTFOLIO.md, docs/OVERLAYS.md, docs/IMPROVEMENTS.md
 - **`myquantstore serve` est implémenté** (API query réseau, pas le chart) : `docs/SERVE.md` (hors v1 encore ouvert). Backtest hebdo = snapshot Parquet, pas cette API.
 - **`--adjust` est implémenté** (futures back-adjusted rollover + stocks dividends après splits). Ne pas le documenter comme stub/NotImplemented.
 - Maintenir AGENTS.md à jour (ce fichier est la source de vérité pour les consignes de dev).

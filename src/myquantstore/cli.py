@@ -5,6 +5,7 @@ Commandes disponibles :
 
 - ``myquantstore init`` : bootstrap XDG (config + dirs + clé optionnelle).
 - ``myquantstore doctor`` : diagnostic install / config / chemins.
+  ``doctor overlays`` : validation du dossier overlays contre le contrat meta.json v2.
 - ``myquantstore setup-key`` : clé API Massive dans ``~/.config/myquantstore/.env``.
 - ``myquantstore schedule`` : jobs périodiques fetch (OHLCV) et caches (Massive).
 - ``myquantstore config`` : affiche la config résolue (clé masquée) + chemin du fichier.
@@ -410,6 +411,27 @@ def _build_parser() -> argparse.ArgumentParser:
         "--ping",
         action="store_true",
         help="Tente un ping HTTP léger vers l'API Massive si clé présente",
+    )
+    doctor_sub = p_doctor.add_subparsers(dest="doctor_command", help="Sous-commande doctor")
+    p_doctor_overlays = doctor_sub.add_parser(
+        "overlays",
+        help="Valide {overlay_dir}/Backtests/ contre le contrat meta.json v2",
+        description=(
+            "Scanne les *.meta.json du dossier overlays, valide le format v2 et affiche\n"
+            "par produit les backtests trouvés (type, UT, label généré, params saillants).\n"
+            "Lecture seule. Exit 1 si au moins un fichier est rejeté."
+        ),
+        epilog=(
+            "Exemples:\n"
+            "  myquantstore doctor overlays\n"
+            "  myquantstore doctor overlays --overlay-dir /chemin/vers/overlays"
+        ),
+        formatter_class=_HELP_FMT,
+    )
+    p_doctor_overlays.add_argument(
+        "--overlay-dir",
+        default=None,
+        help="Racine overlays à valider (défaut: [chart.overlay] overlay_dir)",
     )
 
     # --- setup-key ---
@@ -1724,8 +1746,58 @@ def _cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_doctor_overlays(args: argparse.Namespace) -> int:
+    """``doctor overlays`` : valide ``{overlay_dir}/Backtests/`` contre le contrat v2."""
+    from myquantstore.chart.overlay import scan_report, timeframe_label
+
+    overlay_dir = getattr(args, "overlay_dir", None)
+    if not overlay_dir:
+        try:
+            overlay_dir = load_settings().overlay_dir
+        except FileNotFoundError as exc:
+            console.print(f"[red]Erreur:[/red] {exc}")
+            console.print("[dim]Lancez `myquantstore init` pour créer la configuration.[/dim]")
+            return 1
+    if not overlay_dir:
+        console.print("[yellow]Aucun overlay_dir configuré[/yellow] ([chart.overlay] overlay_dir).")
+        return 0
+
+    report = scan_report(overlay_dir)
+    console.print("[bold]== doctor overlays ==[/bold]")
+    if not report["exists"]:
+        console.print(f"  [red]FAIL[/red]  dossier Backtests introuvable sous: {overlay_dir}")
+        return 1
+    console.print(f"  dossier: {report['dir']}")
+
+    total = 0
+    for block in report["products"]:
+        overlays = block["overlays"]
+        total += len(overlays)
+        console.print(f"\n[bold]{block['product']}[/bold] — {len(overlays)} backtest(s)")
+        for row in overlays:
+            console.print(f"  [green]OK[/green]  {row['label']}")
+            console.print(
+                f"        stem={row['stem']} id={row['id']} "
+                f"type={row['backtest_type']} ut={timeframe_label(row['timeframe'])}"
+            )
+            if row["salient"]:
+                console.print(f"        saillants: {', '.join(row['salient'])}")
+
+    skipped = report["skipped"]
+    if skipped:
+        console.print(f"\n[bold yellow]{len(skipped)} fichier(s) ignoré(s)[/bold yellow]")
+        for item in skipped:
+            console.print(f"  [yellow]SKIP[/yellow]  {item['file']}: {item['reason']}")
+
+    console.print(f"\n{total} backtest(s) valide(s), {len(skipped)} fichier(s) rejeté(s).")
+    return 1 if skipped else 0
+
+
 def _cmd_doctor(args: argparse.Namespace) -> int:
-    """Commande ``doctor`` : diagnostic install."""
+    """Commande ``doctor`` : diagnostic install, ou ``doctor overlays``."""
+    if getattr(args, "doctor_command", None) == "overlays":
+        return _cmd_doctor_overlays(args)
+
     from myquantstore.onboarding import run_doctor
 
     report = run_doctor(ping_api=bool(getattr(args, "ping", False)))

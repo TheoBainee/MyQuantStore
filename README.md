@@ -320,10 +320,51 @@ myquantstore chart --mdns --host 0.0.0.0
 
 **Overlays** : `[chart.overlay] overlay_dir` + API `/api/overlays`, `/api/overlay/{stem}` (backtest / indicateurs). Timezone d'affichage : `[chart] timezone`. Couleurs : `[chart] candle_up/down`. Échelle lin/log dans la toolbar.
 
+#### Overlays backtest — recherche et navigation
+
+Contrat du format `meta.json` : **[`docs/OVERLAYS.md`](docs/OVERLAYS.md)**. MQS ne produit pas
+les overlays, il les lit — un service externe écrit les fichiers, MQS les indexe et les rend
+navigables. Le parseur est **v2 strict** : un fichier non conforme est ignoré et listé avec sa
+raison, jamais fatal au catalogue.
+
+Chaque backtest déclare son **type** (`backtest_type`, valeur libre qui regroupe une
+optimisation — tous les RSI ensemble, tous les MACD ensemble), l'**UT sur laquelle il a été
+calculé** (`timeframe`, obligatoire) et ses **params** (dict libre, découvert en lisant le
+disque, cherchable).
+
+Les noms sont générés côté serveur par détection des params **saillants** — ceux qui varient
+dans un même `backtest_type`. Les params constants d'une optimisation (`ticksize`, `cth_open`…)
+ne polluent pas le nom et restent consultables au tooltip :
+
+```
+short_20_35_0   →   cth_factor · 1min · short · entry_factor=20 · factor=35
+rsi_14_70       →   rsi · 15min · length=14
+```
+
+Le sélecteur du chart est un combobox avec recherche (label, id, type, params), sélecteur de
+type alimenté par les types découverts, et chips de relation à l'UT du graph :
+
+| Chip | Sémantique | Défaut |
+|---|---|---|
+| `UT ≥ graph` | backtests calculés sur une UT égale ou plus grossière — direction non lossy | ✅ |
+| `UT = graph` | correspondance exacte | |
+
+Le survol d'une ligne affiche la liste complète des params. La sélection courante reste
+affichée même si elle sort du filtre après un changement d'UT.
+
+Validation de la sortie du producteur, sans lancer le serveur chart :
+
+```bash
+myquantstore doctor overlays                                  # utilise [chart.overlay] overlay_dir
+myquantstore doctor overlays --overlay-dir /chemin/overlays   # exit 1 si un fichier est rejeté
+```
+
 **Améliorations futures** (documentées, non implémentées) :
 - ~~Dual-source extraday Yahoo étendu (forex/indices/futures daily)~~ done
 - ~~Page d'accueil dashboard à `/`~~ done
 - ~~Import d'overlays backtest / indicateurs~~ done
+- ~~Recherche / navigation des overlays (types, UT, params)~~ done
+- Affichage simultané de plusieurs overlays (modèle déjà prêt, cf. `docs/OVERLAYS.md` §12)
 - Récupérer les chandeliers 1 seconde (plan payant)
 - Backend alternatif FinPlot (desktop only)
 - Streaming temps réel (websockets, plans payants)
@@ -428,6 +469,7 @@ Après quoi `myquantstore fe<Tab>` complète automatiquement en `myquantstore fe
 - `docs/TECHNICAL_DESIGN.md` — documentation technique complète (architecture, configuration, API, rollover, cascade, etc.).
 - `docs/MULTI_TYPE.md` — architecture multi-type (5 types d'instruments, endpoints par type, sémantique `--adjust`/`--no-split`, layout de stockage, statut d'implémentation).
 - `docs/PORTFOLIO.md` — analyse MPT (`portfolio stats|corr|optimize|allocate|frontier`) et chart lazy `portfolio:*`.
+- `docs/OVERLAYS.md` — contrat du format `meta.json` v2 des overlays backtest (types, UT, params cherchables, labels, sélecteur, validation CLI).
 - `docs/IMPROVEMENTS.md` — propositions d'amélioration (hors correctifs déjà appliqués).
 
 ## Confidentialité et sécurité
