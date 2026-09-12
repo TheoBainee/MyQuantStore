@@ -1004,13 +1004,17 @@ Le frontend chart n'a besoin que de : `time`, OHLC, `volume`, `candle_count`. La
 
 **Colonnes éliminées** : `ticker`, `product_code`, `run_id` (type `Categorical` de Polars). Polars encode les `Categorical` en `dictionary<values=string_view>` en Arrow IPC, qui n'est pas supporté par apache-arrow JS 17.0.0 (erreur `"Unrecognized type: undefined (24)"`). Le chart n'en a pas besoin.
 
-**Timestamps uniques** : `query()` déduplique déjà les rolls (§9). `_prepare_chart_df()` ne refait pas de `unique` — le chart visualise ce que `query()` retourne (défaut = une barre par timestamp). Lightweight Charts exige des timestamps uniques ; le défaut de `query()` le garantit.
+**Timestamps uniques** : `query()` déduplique déjà les rolls (§9). `_prepare_chart_df()` ne refait pas de `unique` — le chart visualise ce que `query()` retourne (défaut = une barre par timestamp). Lightweight Charts exige des timestamps uniques ; le défaut de `query()` le garantit. Côté client, `dedupeCandlesByTime()` re-déduplique par `time` (garde la dernière) au parse et au prepend — un doublon ferait lever `Uncaught Error: Value is null` au rendu.
 
 ### 12bis.4 Lazy loading et zoom cap
 
 **Chargement initial** : `limit = max_visible_candles × buffer_multiplier` candles (les plus récentes via `df.tail(limit)`). Le serveur passe `limit=None` à `query()` (qui fait `head`) et applique `tail()` après coup pour obtenir les plus récentes.
 
-**Lazy loading horizontal** : quand l'utilisateur pan vers la gauche, le frontend fetch des chunks plus anciens via `before` param. Le trigger se déclenche uniquement quand `barsBefore < 250` (moins de 250 candles restent avant le bord gauche de la vue). Un flag `noMoreData` coupe les requêtes quand le serveur retourne 0 bytes ou 0 candles (historique épuisé ou buckets partiels droppés), évitant les boucles infinies.
+**Lazy loading horizontal** : quand l'utilisateur pan vers la gauche, le frontend fetch des chunks plus anciens via `before` param. Le trigger se déclenche uniquement quand `barsBefore < 250` (moins de 250 candles restent avant le bord gauche de la vue). Un flag `noMoreData` coupe les requêtes quand le serveur retourne 0 bytes ou 0 candles *nouvelles* (historique épuisé, buckets partiels droppés, ou seul le joint inclusif), évitant les boucles infinies.
+
+**Joint `before` inclusif** : l'API mappe `before` → `query(end=…)` avec `window_start <= end`. Le frontend envoie `before = oldestTimestamp` (ISO UTC) puis **filtre côté client** `time < boundary` avant le prepend — sinon le timestamp du joint est dupliqué et `setData` plante (§12bis.3 « Timestamps uniques »).
+
+**Version embarquée 5.2.1** : la lib vendored (`static/lightweight-charts.standalone.production.js`) doit rester ≥ 5.2.1 — la 5.2.0 plantait (`Uncaught Error: Value is null`, pane chandeliers vidé, overlay canvas indépendant intact) au `setData` de plusieurs séries pendant que le crosshair survole des données (upstream #2044, fix PR #2110 en 5.2.1). Testé par `test_get_static_lightweight_charts_js`.
 
 **Zoom cap** : `subscribeVisibleLogicalRangeChange` bloque le dézoom au-delà de `max_visible_candles` candles visibles (butée, pas résolution cap).
 
@@ -1034,7 +1038,7 @@ Templates HTML avec paramètres injectés par string replacement / JSON. Les JS 
 
 **Sélecteur d'UT** : le changement d'UT via le dropdown appelle `changeTimescale()` qui reset l'état (`allCandles = []`, `oldestTimestamp = null`, `noMoreData = false`) et relance `loadInitial()`. L'UT est sauvegardée dans `localStorage` (survit aux F5).
 
-**Parsing Arrow IPC** : `parseArrowIpc()` lit le buffer, extrait les colonnes via `table.getChildAt(i)`, convertit `time` (Date) → timestamp UNIX en secondes, skip les candles avec valeurs null (avec `console.warn`), et trie par time ascendant (exigé par Lightweight Charts).
+**Parsing Arrow IPC** : `parseArrowIpc()` lit le buffer, extrait les colonnes via `table.getChildAt(i)`, convertit `time` (Date) → timestamp UNIX en secondes, skip les candles avec valeurs null (avec `console.warn`), trie par time ascendant puis `dedupeCandlesByTime()` (exigé par Lightweight Charts).
 
 ### 12bis.6 mDNS (optionnel)
 

@@ -170,6 +170,9 @@ class TestChartServer:
         resp = client.get("/static/lightweight-charts.standalone.production.js")
         assert resp.status_code == 200
         assert len(resp.content) > 1000
+        # Version minimale : 5.2.1 corrige « Value is null » au setData multi-séries
+        # pendant hover crosshair (upstream #2044, fix PR #2110).
+        assert b'version:function(){return"5.2.1"}' in resp.content
 
     def test_get_candles_returns_arrow_ipc(self, chart_setup):
         """GET /api/candles retourne des chandeliers en Arrow IPC."""

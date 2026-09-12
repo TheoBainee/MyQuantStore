@@ -294,6 +294,20 @@
             });
         }
 
+        /** Une barre par `time` (garde la dernière), ordre ASC présupposé. */
+        function dedupeCandlesByTime(rows) {
+            if (!rows.length) return rows;
+            const out = [];
+            for (const r of rows) {
+                if (out.length && out[out.length - 1].time === r.time) {
+                    out[out.length - 1] = r;
+                } else {
+                    out.push(r);
+                }
+            }
+            return out;
+        }
+
         // --- Parsing Arrow IPC → array de candles ---
         function parseArrowIpc(buffer) {
             const table = Arrow.tableFromIPC(buffer);
@@ -331,7 +345,7 @@
             }
             // Trier par time ascendant (Lightweight Charts l'exige)
             rows.sort((a, b) => a.time - b.time);
-            return rows;
+            return dedupeCandlesByTime(rows);
         }
 
         // --- Chargement initial ---
@@ -367,7 +381,10 @@
             if (isLoading || noMoreData || oldestTimestamp === null) return;
             isLoading = true;
 
-            const beforeDate = new Date(oldestTimestamp * 1000).toISOString();
+            const boundary = oldestTimestamp; // API `before` inclusive (end <=) :
+            // on droppe le joint côté client pour éviter un doublon de time au prepend
+            // (sinon setData LWC → Uncaught Error: Value is null)
+            const beforeDate = new Date(boundary * 1000).toISOString();
             const url = `/api/candles?product=${PRODUCT}&timescale_unit=${currentTimescale.unit}&timescale_nb=${currentTimescale.nb}&limit=${FETCH_CHUNK_SIZE}&before=${beforeDate}`;
 
             try {
@@ -380,15 +397,16 @@
                     return;
                 }
 
-                const olderCandles = parseArrowIpc(buffer);
-                if (olderCandles.length === 0) {  // Réponse vide (ex: buckets partiels droppés)
+                // Exclusif : uniquement des times strictement plus anciens que le joint
+                const olderCandles = parseArrowIpc(buffer).filter(c => c.time < boundary);
+                if (olderCandles.length === 0) {  // Vide ou seul le joint inclusif reçu
                     noMoreData = true;
-                    logger.debug('Lazy load: 0 candles reçues, plus de données');
+                    logger.debug('Lazy load: 0 candles nouvelles, plus de données');
                     return;
                 }
 
-                // Prepend : les candles plus anciennes vont au début
-                allCandles = [...olderCandles, ...allCandles];
+                // Prepend : les candles plus anciennes vont au début (dédup au cas où)
+                allCandles = dedupeCandlesByTime([...olderCandles, ...allCandles]);
                 oldestTimestamp = allCandles[0].time;
 
                 updateChart();
