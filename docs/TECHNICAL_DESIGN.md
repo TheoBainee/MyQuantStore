@@ -1010,7 +1010,9 @@ Le frontend chart n'a besoin que de : `time`, OHLC, `volume`, `candle_count`. La
 
 **Chargement initial** : `limit = max_visible_candles × buffer_multiplier` candles (les plus récentes via `df.tail(limit)`). Le serveur passe `limit=None` à `query()` (qui fait `head`) et applique `tail()` après coup pour obtenir les plus récentes.
 
-**Lazy loading horizontal** : quand l'utilisateur pan vers la gauche, le frontend fetch des chunks plus anciens via `before` param. Le trigger se déclenche uniquement quand `barsBefore < 250` (moins de 250 candles restent avant le bord gauche de la vue). Un flag `noMoreData` coupe les requêtes quand le serveur retourne 0 bytes ou 0 candles (historique épuisé ou buckets partiels droppés), évitant les boucles infinies.
+**Lazy loading horizontal** : quand l'utilisateur pan vers la gauche, le frontend fetch des chunks plus anciens via `before` param. Le trigger se déclenche uniquement quand `barsBefore < 250` (moins de 250 candles restent avant le bord gauche de la vue). Un flag `noMoreData` coupe les requêtes quand le serveur retourne 0 bytes ou 0 candles *nouvelles* (historique épuisé, buckets partiels droppés, ou seul le joint inclusif), évitant les boucles infinies.
+
+**Joint `before` inclusif** : l'API mappe `before` → `query(end=…)` avec `window_start <= end`. Le frontend envoie `before = oldestTimestamp` (ISO UTC) puis **filtre côté client** `time < boundary` avant le prepend. Sans ce filtre, le timestamp du joint est dupliqué → `setData` Lightweight Charts lève `Uncaught Error: Value is null` et le pane chandeliers disparaît (l'overlay canvas, indépendant, reste visible). `dedupeCandlesByTime()` + garde `setData` en try/catch complètent la défense en profondeur.
 
 **Zoom cap** : `subscribeVisibleLogicalRangeChange` bloque le dézoom au-delà de `max_visible_candles` candles visibles (butée, pas résolution cap).
 
@@ -1034,7 +1036,7 @@ Templates HTML avec paramètres injectés par string replacement / JSON. Les JS 
 
 **Sélecteur d'UT** : le changement d'UT via le dropdown appelle `changeTimescale()` qui reset l'état (`allCandles = []`, `oldestTimestamp = null`, `noMoreData = false`) et relance `loadInitial()`. L'UT est sauvegardée dans `localStorage` (survit aux F5).
 
-**Parsing Arrow IPC** : `parseArrowIpc()` lit le buffer, extrait les colonnes via `table.getChildAt(i)`, convertit `time` (Date) → timestamp UNIX en secondes, skip les candles avec valeurs null (avec `console.warn`), et trie par time ascendant (exigé par Lightweight Charts).
+**Parsing Arrow IPC** : `parseArrowIpc()` lit le buffer, extrait les colonnes via `table.getChildAt(i)`, convertit `time` (Date) → timestamp UNIX en secondes, skip les candles avec OHLC non finis / time invalide (`null`, `NaN`, `undefined` — `console.warn`), trie par time ASC puis `dedupeCandlesByTime()` (1 barre / time, exigé par Lightweight Charts).
 
 ### 12bis.6 mDNS (optionnel)
 
@@ -1134,6 +1136,15 @@ tickers d'agrégat, le contrat courant et sa maturité (cache local). Réponse d
 **Champs utilisés de `/contracts`** : `ticker`, `first_trade_date`, `last_trade_date`, `settlement_date`, `product_code`, `name`, `trade_tick_size` (pour la normalisation), `type` (filtre `single`).
 
 **Champs utilisés de `/aggs`** : `window_start` (ns), `open`, `high`, `low`, `close`, `volume`, `dollar_volume`, `transactions`, `session_end_date`, `settlement_price`, `ticker`.
+
+---
+
+## 16. Plan d'implémentation — **ARCHIVÉ** (historique 2026-07)
+
+> Ce plan a servi au bootstrap futures-only. L'état courant est multi-type ×
+> dual-source (Massive 1min + Yahoo 1day), avec serve, schedule dual-job,
+> portfolio MPT, overlays chart. Voir README + `docs/IMPROVEMENTS.md` pour la suite.
+isés de `/aggs`** : `window_start` (ns), `open`, `high`, `low`, `close`, `volume`, `dollar_volume`, `transactions`, `session_end_date`, `settlement_price`, `ticker`.
 
 ---
 

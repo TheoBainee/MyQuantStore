@@ -294,6 +294,25 @@
             });
         }
 
+        // --- Helpers données (LWC exige time strictement croissant, OHLC finis) ---
+        function isFiniteNumber(v) {
+            return typeof v === 'number' && Number.isFinite(v);
+        }
+
+        /** Une barre par `time` (garde la dernière), ordre ASC présupposé. */
+        function dedupeCandlesByTime(rows) {
+            if (!rows.length) return rows;
+            const out = [];
+            for (const r of rows) {
+                if (out.length && out[out.length - 1].time === r.time) {
+                    out[out.length - 1] = r;
+                } else {
+                    out.push(r);
+                }
+            }
+            return out;
+        }
+
         // --- Parsing Arrow IPC → array de candles ---
         function parseArrowIpc(buffer) {
             const table = Arrow.tableFromIPC(buffer);
@@ -310,28 +329,36 @@
                 const h = colMap['high'] ? colMap['high'].get(i) : null;
                 const l = colMap['low'] ? colMap['low'].get(i) : null;
                 const c = colMap['close'] ? colMap['close'].get(i) : null;
-                // Skip les candles incomplètes (Lightweight Charts rejette les null)
-                if (ws === null || o === null || h === null || l === null || c === null) {
+                // Skip incomplet / non-fini (LWC: null/NaN → "Value is null" au rendu)
+                if (ws == null || !isFiniteNumber(o) || !isFiniteNumber(h)
+                    || !isFiniteNumber(l) || !isFiniteNumber(c)) {
                     skipped++;
                     continue;
                 }
                 // Lightweight Charts attend un timestamp UNIX en secondes
-                const ts = Math.floor(new Date(ws).getTime() / 1000);
+                const ms = new Date(ws).getTime();
+                if (!Number.isFinite(ms)) {
+                    skipped++;
+                    continue;
+                }
+                const ts = Math.floor(ms / 1000);
+                const volRaw = colMap['volume'] ? colMap['volume'].get(i) : 0;
+                const volume = isFiniteNumber(volRaw) ? volRaw : 0;
                 rows.push({
                     time: ts,
                     open: o,
                     high: h,
                     low: l,
                     close: c,
-                    volume: colMap['volume'] ? colMap['volume'].get(i) : 0,
+                    volume,
                 });
             }
             if (skipped > 0) {
-                console.warn(`[chart] ${skipped} candles skippées (valeurs null)`);
+                console.warn(`[chart] ${skipped} candles skippées (null/NaN/time invalide)`);
             }
-            // Trier par time ascendant (Lightweight Charts l'exige)
+            // Trier + dédup time (LWC exige strictement croissant, 1 barre / time)
             rows.sort((a, b) => a.time - b.time);
-            return rows;
+            return dedupeCandlesByTime(rows);
         }
 
         // --- Chargement initial ---
@@ -367,7 +394,11 @@
             if (isLoading || noMoreData || oldestTimestamp === null) return;
             isLoading = true;
 
-            const beforeDate = new Date(oldestTimestamp * 1000).toISOString();
+            // API `before` est inclusive (end <=) : on renvoie oldestTimestamp,
+            // puis on droppe time >= oldest côté client pour éviter le doublon
+            // au joint (sinon setData LWC → Uncaught Error: Value is null).
+            const boundary = oldestTimestamp;
+            const beforeDate = new Date(boundary * 1000).toISOString();
             const url = `/api/candles?product=${PRODUCT}&timescale_unit=${currentTimescale.unit}&timescale_nb=${currentTimescale.nb}&limit=${FETCH_CHUNK_SIZE}&before=${beforeDate}`;
 
             try {
@@ -380,15 +411,16 @@
                     return;
                 }
 
-                const olderCandles = parseArrowIpc(buffer);
-                if (olderCandles.length === 0) {  // Réponse vide (ex: buckets partiels droppés)
+                // Exclusif : uniquement des times strictement plus anciens
+                const olderCandles = parseArrowIpc(buffer).filter(c => c.time < boundary);
+                if (olderCandles.length === 0) {  // Réponse vide ou seul le joint inclusif
                     noMoreData = true;
-                    logger.debug('Lazy load: 0 candles reçues, plus de données');
+                    logger.debug('Lazy load: 0 candles nouvelles, plus de données');
                     return;
                 }
 
-                // Prepend : les candles plus anciennes vont au début
-                allCandles = [...olderCandles, ...allCandles];
+                // Prepend : plus anciennes d'abord ; dédup au cas où
+                allCandles = dedupeCandlesByTime([...olderCandles, ...allCandles]);
                 oldestTimestamp = allCandles[0].time;
 
                 updateChart();
@@ -403,6 +435,8 @@
 
         // --- Mettre à jour les données du chart ---
         function updateChart() {
+            // Garde-fou : LWC plante le pane entier si time non strictement croissant
+            allCandles = dedupeCandlesByTime(allCandles);
             const candleData = allCandles.map(c => ({
                 time: c.time, open: c.open, high: c.high, low: c.low, close: c.close,
             }));
@@ -410,8 +444,13 @@
                 time: c.time, value: c.volume,
                 color: c.close >= c.open ? VOL_UP : VOL_DOWN,
             }));
-            candleSeries.setData(candleData);
-            volumeSeries.setData(volumeData);
+            try {
+                candleSeries.setData(candleData);
+                volumeSeries.setData(volumeData);
+            } catch (e) {
+                console.error('[chart] setData failed (doublons/ordre/null OHLC ?)', e);
+                return;
+            }
             // Refresh le lookup map pour le tooltip crosshair
             candleMap.clear();
             for (const c of allCandles) {
