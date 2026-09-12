@@ -84,7 +84,7 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
 - Query : reader + resampler + adjust (splits stocks ; `--adjust` = dividends stocks / Panama futures).
   `--end YYYY-MM-DD` = fin de journée inclusive (pas minuit). `--check-ticksize-accuracy` exit 1 si ERREUR.
   `--forward-fill` / `query(..., forward_fill=True)` / serve `?forward_fill=true` / chart `--forward-fill` : opt-in, après resample (même sémantique).
-- CLI complète + chart serveur (dashboard `/` multi-type, miniatures SVG 1day, charts `/{type}:{symbol}`). Couleurs conf : `[chart] candle_up/down` ; overlay `[chart.overlay] overlay_dir` + `[chart.overlay.backtest]` (tx/order buy/sell hex). Rétrocompat `[chart] overlay_dir`. API `/api/overlays`, `/api/overlay/{stem}`. Lazy-load : API `before` inclusive ; client filtre `time < oldest` + dédup avant `setData` (évite LWC « Value is null »).
+- CLI complète + chart serveur (dashboard `/` multi-type, miniatures SVG 1day, charts `/{type}:{symbol}`). Couleurs conf : `[chart] candle_up/down` ; overlay `[chart.overlay] overlay_dir` + `[chart.overlay.backtest]` (tx/order buy/sell hex). Rétrocompat `[chart] overlay_dir`. API `/api/overlays`, `/api/overlay/{stem}`.
 - Timezone centralisée : `query/timezone.py` → `resolve_timezone(settings, instrument, override=…)`
   (override CLI/serve → futur TZ/instrument → `[chart] timezone` → UTC).
   CLI / serve / chart délèguent (pas de résolution locale).
