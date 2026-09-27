@@ -18,8 +18,8 @@ Le backtest hebdo **n'attend pas** cette API. Il utilise un snapshot Parquet
 - Agrégat = fusion de dumps, clé `(window_start, ticker)`. Au roll 1min, deux
   contrats peuvent partager le même timestamp (volontaire).
 - `query()` est la couche conso : resample, splits/div, Panama `--adjust`,
-  **dédup timestamps ON par défaut** (`dedup_timestamps=True` ; le contrat le
-  plus récent de la `RolloverChain` gagne). `--no-dedup-timestamps` conserve
+  **dédup timestamps ON par défaut** (`dedup_timestamps=True` ; le contrat
+  actif de la `RolloverChain` à la date de la barre gagne). `--no-dedup-timestamps` conserve
   les deux. Après `--adjust` et le bilan tick size, avant normalize/resample.
 - Le chart s'appuie sur ce défaut (plus de `unique` dans `_prepare_chart_df`).
 - Package : `__init__.py` n'exporte que `__version__`. Pas de SDK public.

@@ -269,10 +269,11 @@ class TestServeQuery:
         )
         assert resp.status_code == 400
 
-    def test_dedup_default_keeps_newer_contract(
+    def test_dedup_default_keeps_active_contract(
         self, tmp_settings, es_instrument, sample_contracts_df
     ):
-        ts = datetime(2025, 3, 7, 0, 0, 0, tzinfo=UTC)
+        # lun. 2025-03-10 : ESM5 est le contrat actif (rollover ESH5 = ven. 2025-03-07)
+        ts = datetime(2025, 3, 10, 15, 0, 0, tzinfo=UTC)
         save_raw_dump(
             _make_ohlcv_df("ESH5", [ts], [5800.00]),
             es_instrument,

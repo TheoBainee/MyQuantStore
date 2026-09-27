@@ -352,7 +352,7 @@ TTL par défaut : 30 jours (`instrument_cache_ttl_days = 30`).
 
 On passe au contrat suivant **1 semaine avant l'expiration**. Exemple : contrat expirant le vendredi 19 → dernier jour conservé = vendredi 12. Les chandeliers à partir du lundi suivant appartiennent au nouveau contrat.
 
-En pratique, le `rollover_date` d'un contrat = `last_trade_date - days_before_expiry` (défaut 7 jours). Tous les chandeliers dont `window_start < rollover_date` appartiennent à ce contrat ; à partir de `rollover_date`, on bascule sur le contrat suivant (front-month suivant).
+En pratique, le `rollover_date` d'un contrat = `last_trade_date - days_before_expiry` (défaut 7 jours) est son **dernier jour** de front-month : les chandeliers jusqu'au `rollover_date` inclus appartiennent à ce contrat ; le contrat suivant prend le relais au **jour ouvré suivant** (lundi–vendredi, pas de calendrier de jours fériés). Exemple : expiration ven. 18/09/2026 → `rollover_date` ven. 11/09 (encore l'ancien contrat), nouveau contrat à partir du lun. 14/09.
 
 ### 6.2 L'objet `RolloverChain`
 
@@ -379,7 +379,7 @@ class RolloverSegment:
     settlement_date: date    # ex: 2025-06-13
     rollover_date: date      # ex: 2025-06-06  = last_trade_date - days_before_expiry
     active_from: date        # ex: 2025-03-17  — date à partir de laquelle ce contrat devient le front-month
-    active_until: date       # ex: 2025-06-06  — date (exclusive) où on bascule au contrat suivant
+    active_until: date       # ex: 2025-06-09  — date (exclusive) où on bascule au contrat suivant = jour ouvré suivant rollover_date
     trade_tick_size: float   # ex: 0.25  — taille du tick pour la normalisation des prix
     product_code: str        # ex: "ES"
     name: str                # ex: "E-mini S&P 500 Jun 2025"
@@ -401,7 +401,7 @@ class RolloverSegment:
 1. Trier `contracts` par `first_trade_date` ascendant.
 2. Ne garder que les contrats de type `single` (ignorer les `combo`).
 3. Pour chaque contrat : calculer `rollover_date = last_trade_date - days_before_expiry`.
-4. Déterminer `active_from` et `active_until` en chaînant les contrats : `active_from` du segment N+1 = `rollover_date` du segment N ; `active_until` du segment N = `rollover_date` du segment N (exclusive).
+4. Déterminer `active_from` et `active_until` en chaînant les contrats : `active_until` du segment N = jour ouvré suivant le `rollover_date` du segment N (exclusive) ; `active_from` du segment N+1 = `active_until` du segment N.
 5. Stocker `trade_tick_size` pour chaque segment (utile à `aggregator` pour la normalisation).
 
 ### 6.3 Affichage via `status`
@@ -411,10 +411,10 @@ La commande `myquantstore status` affiche, pour chaque produit, la `RolloverChai
 ```
 == ES — RolloverChain ==
 ticker   first_trade  last_trade   rollover_date  active_from  active_until  tick_size
-ESH5     2024-12-16   2025-03-14   2025-03-07     2024-12-16   2025-03-07    0.25
-ESM5     2025-03-17   2025-06-13   2025-06-06     2025-03-07   2025-06-06    0.25
-ESU5     2025-06-16   2025-09-12   2025-09-05     2025-06-06   2025-09-05    0.25
-ESZ5     2025-09-15   2025-12-12   2025-12-05     2025-09-05   2025-12-05    0.25
+ESH5     2024-12-16   2025-03-14   2025-03-07     2024-12-16   2025-03-10    0.25
+ESM5     2025-03-17   2025-06-13   2025-06-06     2025-03-10   2025-06-09    0.25
+ESU5     2025-06-16   2025-09-12   2025-09-05     2025-06-09   2025-09-08    0.25
+ESZ5     2025-09-15   2025-12-12   2025-12-05     2025-09-08   2025-12-08    0.25
 ```
 
 Le `status` affiche aussi l'information "contrat actuellement actif" (front-month = `active_contract(date.today())`).
@@ -424,7 +424,7 @@ Le `status` affiche aussi l'information "contrat actuellement actif" (front-mont
 - `adjust_rollover = False` (défaut) : on conserve les gaps naturels entre contrats. Chaque chandelier provient du contrat actif à sa date.
 - `adjust_rollover = True` (`--adjust`) : **back-adjusted** via
   `query/adjust.py:apply_rollover_adjustment`. Pour chaque bascule
-  `rollover_date`, ratio = close(nouveau) / close(ancien) ; les facteurs sont
+  (`active_from` du contrat suivant), ratio = close(nouveau) / close(ancien) ; les facteurs sont
   cumulés vers l'arrière (contrat front = 1.0). Ajuste OHLC + `settlement_price`
   si présent. Le ticker original est conservé (pas de ticker synthétique).
 
@@ -642,9 +642,9 @@ def aggregate(instrument, settings, resolution="1min") -> pl.DataFrame:
 
 Dédup `keep="last"` : dumps lus par ordre chronologique des `run_ts` (re-fetch du **même** contrat).
 
-**Clé naturelle = `(window_start, ticker)`**, pas `window_start` seul. Au jour de roll futures 1min, l'ancien contrat est fetché avec `window_start.lte=rollover_date` et le nouveau avec `gte=rollover_date` (dates calendaires inclusives). Les deux dumps peuvent donc contenir des barres au **même** `window_start`. L'agrégat **conserve les deux** : ce sont deux faits (deux contrats). Un `unique(window_start)` dans l'agrégat serait une décision de rollover (quel contrat gagne) ; `keep="last"` sans règle d'ordre n'est **pas** « garder le front-month ».
+**Clé naturelle = `(window_start, ticker)`**, pas `window_start` seul. Au jour de roll futures 1min, l'ancien contrat est fetché avec `window_start.lte=active_until` et le nouveau avec `gte=active_from` (même date = jour ouvré suivant le `rollover_date` ; dates calendaires inclusives). Les deux dumps peuvent donc contenir des barres au **même** `window_start`. L'agrégat **conserve les deux** : ce sont deux faits (deux contrats). Un `unique(window_start)` dans l'agrégat serait une décision de rollover (quel contrat gagne) ; `keep="last"` sans règle d'ordre n'est **pas** « garder le front-month ».
 
-La série 1-timestamp = 1-barre est un choix de **`query()`** (`dedup_timestamps=True` par défaut, après `--adjust` et le bilan tick size, avant normalize/resample). Si une `RolloverChain` est fournie, le contrat le plus récent de la chaîne gagne. `--no-dedup-timestamps` conserve les deux lignes. Le chart s'appuie sur ce défaut (§12bis.3). Le resample `k>1` fusionne aussi via `group_by`.
+La série 1-timestamp = 1-barre est un choix de **`query()`** (`dedup_timestamps=True` par défaut, après `--adjust` et le bilan tick size, avant normalize/resample). Si une `RolloverChain` est fournie, le contrat **actif** à la date de la barre gagne (`session_end_date` dans `[active_from, active_until)`), à défaut le plus récent de la chaîne. `--no-dedup-timestamps` conserve les deux lignes. Le chart s'appuie sur ce défaut (§12bis.3). Le resample `k>1` fusionne aussi via `group_by`.
 
 ---
 
@@ -669,7 +669,7 @@ La fonction `query` accepte plusieurs flags et paramètres de transformation :
 - `check_ticksize_accuracy` (`--check-ticksize-accuracy`) : analyse la conformité des prix au tick size et **affiche un bilan** (cf §8.3), sans modifier les données.
 - `limit` : retourne les N premières lignes (`df.head(N)`). Le chart server passe `limit=None` et fait `df.tail(N)` après coup pour obtenir les candles les plus récentes.
 - `resolution` / `k_days` / `week_aligned` : track extraday Yahoo (`1day`).
-- `dedup_timestamps` (`--no-dedup-timestamps` pour désactiver) : **ON par défaut**. Une barre par `window_start` ; au roll, le contrat le plus récent de la chaîne gagne. Après `--adjust` et le bilan tick size, avant normalize/resample.
+- `dedup_timestamps` (`--no-dedup-timestamps` pour désactiver) : **ON par défaut**. Une barre par `window_start` ; au roll, le contrat actif à la date de la barre gagne (à défaut le plus récent de la chaîne). Après `--adjust` et le bilan tick size, avant normalize/resample.
 - `forward_fill` (`--forward-fill`, serve `?forward_fill=true`, chart `--forward-fill`) : **OFF par défaut**. Après resample, réinsère les barres absentes (intra-session 1min / jours ouvrés 1day) avec OHLC = dernier close, volume 0, `candle_count` 0.
 
 `query()` déduplique **par défaut** sur `window_start`. `--no-dedup-timestamps` renvoie les doublons de roll tels quels (§8.6). L'agrégat, lui, n'est pas une série continue.

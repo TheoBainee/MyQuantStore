@@ -35,7 +35,8 @@ requièrent une chaîne avec un ``tick_size_for_ticker`` non nul (futures).
 au même ``window_start`` (deux ``ticker``) au jour de roll. ``query()``
 déduplique **par défaut** (``dedup_timestamps=True``) après les ajustements
 (Panama voit encore les deux contrats) et le bilan tick size. Si une
-``RolloverChain`` est fournie, le contrat le plus récent de la chaîne gagne ;
+``RolloverChain`` est fournie, le contrat actif à la date de la barre gagne
+(segment ``[active_from, active_until)``), à défaut le plus récent de la chaîne ;
 sinon ``keep="last"``. ``--no-dedup-timestamps`` conserve les deux lignes.
 Le chart s'appuie sur ce défaut (plus de ``unique`` côté chart).
 """
@@ -297,7 +298,10 @@ def _dedup_timestamps(
 ) -> pl.DataFrame:
     """Une barre par ``window_start`` (jour de roll : deux contrats).
 
-    Avec une chaîne à segments (futures), le contrat le plus récent gagne.
+    Avec une chaîne à segments (futures), le contrat **actif** à la date de la
+    barre gagne (``active_from <= date < active_until``, date = ``session_end_date``
+    si présente, sinon date UTC de ``window_start``) ; à défaut (aucun des deux
+    actif), le contrat le plus récent de la chaîne.
     Sans chaîne, ``keep="last"`` après tri sur ``window_start``.
     """
     if df.is_empty() or "window_start" not in df.columns:
@@ -305,12 +309,40 @@ def _dedup_timestamps(
 
     segments = getattr(chain, "segments", None) if chain is not None else None
     if segments and "ticker" in df.columns:
-        rank = {seg.ticker: i for i, seg in enumerate(segments)}
-        df = df.with_columns(
-            pl.col("ticker").cast(pl.Utf8).replace_strict(rank, default=-1).alias("_roll_rank")
+        seg_df = pl.DataFrame(
+            {
+                "_roll_ticker": [seg.ticker for seg in segments],
+                "_roll_rank": list(range(len(segments))),
+                "_roll_from": [seg.active_from for seg in segments],
+                "_roll_until": [seg.active_until for seg in segments],
+            },
+            schema={
+                "_roll_ticker": pl.Utf8,
+                "_roll_rank": pl.Int64,
+                "_roll_from": pl.Date,
+                "_roll_until": pl.Date,
+            },
         )
-        df = df.sort(["window_start", "_roll_rank"]).unique(subset=["window_start"], keep="last")
-        return df.drop("_roll_rank").sort("window_start")
+        bar_date = (
+            pl.col("session_end_date").cast(pl.Date)
+            if "session_end_date" in df.columns
+            else pl.col("window_start").dt.date()
+        )
+        df = df.with_columns(pl.col("ticker").cast(pl.Utf8).alias("_roll_ticker")).join(
+            seg_df, on="_roll_ticker", how="left"
+        )
+        df = df.with_columns(
+            ((bar_date >= pl.col("_roll_from")) & (bar_date < pl.col("_roll_until")))
+            .fill_null(False)
+            .alias("_roll_active"),
+            pl.col("_roll_rank").fill_null(-1),
+        )
+        df = df.sort(["window_start", "_roll_active", "_roll_rank"]).unique(
+            subset=["window_start"], keep="last"
+        )
+        return df.drop(
+            ["_roll_ticker", "_roll_rank", "_roll_from", "_roll_until", "_roll_active"]
+        ).sort("window_start")
 
     return df.unique(subset=["window_start"], keep="last").sort("window_start")
 

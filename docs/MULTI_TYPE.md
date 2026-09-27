@@ -82,7 +82,8 @@ pour `query` et `chart` :
 Implémentations :
 
 - **`RolloverChain`** (`contracts/rollover.py`) — futures : chaîne de contrats
-  expirants, `rollover_date = last_trade_date - days_before_expiry`.
+  expirants, `rollover_date = last_trade_date - days_before_expiry` (dernier jour
+  du contrat ; le suivant démarre au jour ouvré suivant).
 - **`SingleSymbolChain`** — forex/stocks/indices : un seul segment, `tick_size = 0.0`
   (normalisation no-op).
 - **`OptionsChain`** — scaffold : toutes méthodes lèvent `NotImplementedError`.
@@ -215,8 +216,8 @@ au **fetch**. `query()` n'applique le rollover que pour `--adjust` (Panama).
 
 Au jour de roll, l'agrégat 1min **peut** contenir deux lignes au même
 `window_start` (deux `ticker`) — clé naturelle `(timestamp, contrat)`, pas un
-bug. `query()` déduplique **par défaut** (contrat le plus récent de la
-chaîne). `--no-dedup-timestamps` conserve les deux. Le chart utilise ce défaut.
+bug. `query()` déduplique **par défaut** (contrat actif de la chaîne à la
+date de la barre). `--no-dedup-timestamps` conserve les deux. Le chart utilise ce défaut.
 
 ## 8. Configuration
 

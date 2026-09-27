@@ -1,9 +1,12 @@
 """Gestion du rollover des contrats futures.
 
 **Règle de rollover** : on passe au contrat suivant **N jours avant
-l'expiration** (défaut 7 jours). Exemple : un contrat expirant le vendredi 19
-a son ``rollover_date`` au vendredi 12 (= 19 - 7). Les chandeliers à partir
-du ``rollover_date`` appartiennent au contrat suivant (front-month suivant).
+l'expiration** (défaut 7 jours). Le ``rollover_date`` (= ``last_trade_date - N``)
+est le **dernier jour** du contrat courant ; le contrat suivant devient actif
+au **jour ouvré suivant** (lundi–vendredi, pas de calendrier de jours fériés).
+Exemple : un contrat expirant le vendredi 18 a son ``rollover_date`` au
+vendredi 11 (= 18 - 7) — le vendredi 11 appartient encore à ce contrat, le
+contrat suivant est actif à partir du lundi 14.
 
 **L'objet :class:`RolloverChain`** modélise la chaîne continue des contrats
 d'un produit. À partir du DataFrame des contrats (issu du cache ``/contracts``)
@@ -50,16 +53,17 @@ class RolloverSegment:
     """Date de settlement du contrat."""
 
     rollover_date: date
-    """Date de bascule = ``last_trade_date - days_before_expiry``.
-    Les chandeliers dont ``window_start >= rollover_date`` appartiennent au contrat suivant."""
+    """Dernier jour actif du contrat = ``last_trade_date - days_before_expiry``.
+    Le contrat suivant devient actif au jour ouvré suivant (``active_until``)."""
 
     active_from: date
     """Date (inclusive) à partir de laquelle ce contrat devient le front-month.
-    = ``rollover_date`` du contrat précédent, ou ``first_trade_date`` pour le premier."""
+    = ``active_until`` du contrat précédent (jour ouvré suivant son ``rollover_date``),
+    ou ``first_trade_date`` pour le premier."""
 
     active_until: date
     """Date (exclusive) où on bascule au contrat suivant.
-    = ``rollover_date`` de ce contrat."""
+    = jour ouvré suivant le ``rollover_date`` de ce contrat."""
 
     trade_tick_size: float
     """Taille du tick pour ce contrat (depuis /contracts). Utilisé pour la normalisation."""
@@ -83,9 +87,9 @@ class RolloverChain:
     """Chaîne continue des contrats d'un produit.
 
     Construite à partir du DataFrame des contrats (issu du cache ``/contracts``)
-    et de ``days_before_expiry``. Les contrats sont triés par ``first_trade_date``
-    et enchaînés : le ``rollover_date`` d'un contrat devient l'``active_from``
-    du suivant.
+    et de ``days_before_expiry``. Les contrats sont triés par ``last_trade_date``
+    et enchaînés : le jour ouvré suivant le ``rollover_date`` d'un contrat
+    devient l'``active_from`` du suivant.
 
     Usage typique :
 
@@ -115,8 +119,9 @@ class RolloverChain:
         Étapes :
         1. Trier les contrats par ``first_trade_date`` ascendant.
         2. Filtrer les contrats de type ``single`` (ignorer les ``combo``).
-        3. Pour chaque contrat : calculer ``rollover_date = last_trade_date - days_before_expiry``.
-        4. Enchaîner : ``active_from`` du segment N+1 = ``rollover_date`` du segment N.
+        3. Pour chaque contrat : calculer ``rollover_date = last_trade_date - days_before_expiry``
+           (dernier jour actif) et ``active_until`` = jour ouvré suivant.
+        4. Enchaîner : ``active_from`` du segment N+1 = ``active_until`` du segment N.
         """
         if self.contracts.is_empty():
             logger.warning(f"Aucun contrat pour construire la chaîne de {self.product_code}")
@@ -152,7 +157,7 @@ class RolloverChain:
             df = df.sort("last_trade_date")
 
         segments: list[RolloverSegment] = []
-        prev_rollover_date: date | None = None
+        prev_active_until: date | None = None
 
         for row in df.iter_rows(named=True):
             # Extraction des champs (avec valeurs par défaut pour les champs optionnels)
@@ -168,13 +173,14 @@ class RolloverChain:
                 continue
 
             # Calcul du rollover_date = last_trade_date - days_before_expiry
+            # (dernier jour où ce contrat est le front-month)
             rollover_date = last_trade - timedelta(days=self.days_before_expiry)
 
-            # active_from : rollover_date du contrat précédent, ou first_trade_date pour le premier
-            active_from = prev_rollover_date if prev_rollover_date is not None else first_trade
+            # active_from : active_until du contrat précédent, ou first_trade_date pour le premier
+            active_from = prev_active_until if prev_active_until is not None else first_trade
 
-            # active_until : rollover_date de ce contrat (exclus)
-            active_until = rollover_date
+            # active_until : jour ouvré suivant le rollover_date (exclus)
+            active_until = _next_business_day(rollover_date)
 
             segment = RolloverSegment(
                 ticker=ticker,
@@ -190,8 +196,8 @@ class RolloverChain:
             )
             segments.append(segment)
 
-            # Le prochain contrat commence au rollover_date de celui-ci
-            prev_rollover_date = rollover_date
+            # Le prochain contrat commence au jour ouvré suivant le rollover_date de celui-ci
+            prev_active_until = active_until
 
         self.segments = segments
         logger.debug(
@@ -299,3 +305,17 @@ class RolloverChain:
 
     def __len__(self) -> int:
         return len(self.segments)
+
+
+def _next_business_day(d: date) -> date:
+    """Jour ouvré (lundi–vendredi) strictement après ``d``.
+
+    Pas de calendrier de jours fériés : un férié ne porte simplement pas de données.
+
+    :param d: Date de référence.
+    :return: Le lendemain de ``d``, ou le lundi suivant si ``d`` est un vendredi/samedi.
+    """
+    nxt = d + timedelta(days=1)
+    while nxt.weekday() >= 5:
+        nxt += timedelta(days=1)
+    return nxt

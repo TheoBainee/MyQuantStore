@@ -26,7 +26,7 @@ Deux familles de timeframes / sources, **sans se croiser** pour reconstruire un 
 - **Dumps pseudo-bruts** : les réponses API sont normalisées au format interne canonique (timestamps, champs, colonnes d'identité) avant écriture dans `data/raw/` — suffisants pour reconstruire intégralement les agrégats (pas de dump JSON brut).
 - **Ajustement split** pour stocks : stockage en prix **bruts** (`adjusted=false`) + ajustement à la query (toggle `--no-split`, splits ON par défaut via le cache `/stocks/v1/splits`).
 - Mise en cache intelligente : contrats futures (`/futures/v1/contracts`), corporate actions Massive (`/stocks/v1/splits` + `/dividends`) et `yahoo_actions/` (1day stocks), TTL commun configurable.
-- Gestion automatique du **rollover** des contrats futures (switch J-7 avant expiration) via la `RolloverChain`.
+- Gestion automatique du **rollover** des contrats futures (J-7 avant expiration = dernier jour de l'ancien contrat, switch au jour ouvré suivant) via la `RolloverChain`.
 - **Cascade automatique** des dépendances (type-aware) : `query` déclenche `aggregate` → `fetch` → `contracts`/`splits` si nécessaire.
 - Normalisation des prix en **multiples entiers de tick size** (`Int32`) via `--normalize-tick-size` (futures).
 - Test de qualité des données via `--check-ticksize-accuracy` (bilan par ticker, futures).

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time
 
 import polars as pl
 import pytest
@@ -168,31 +168,43 @@ class TestQuery:
         with pytest.raises(ValueError, match="chain"):
             query(es_instrument, tmp_settings, chain=None, normalize_tick_size=True)
 
-    def test_query_dedup_timestamps_default_keeps_newer_contract(
+    def test_query_dedup_timestamps_default_keeps_active_contract(
         self, tmp_settings, es_instrument, sample_chain
     ):
-        """Au même window_start, le contrat le plus récent de la chaîne gagne."""
-        ts = datetime(2025, 3, 7, 0, 0, 0, tzinfo=UTC)
+        """Au même window_start, le contrat actif à la date de la barre gagne.
+
+        Rollover ESH5 = ven. 2025-03-07 (dernier jour ESH5) → ESM5 dès lun. 2025-03-10.
+        Config chart typique : America/Chicago, intraday 04:00–16:00.
+        """
+        friday = datetime(2025, 3, 7, 16, 0, 0, tzinfo=UTC)  # 10:00 CST
+        monday = datetime(2025, 3, 10, 15, 0, 0, tzinfo=UTC)  # 10:00 CDT
         save_raw_dump(
-            _make_df("ESH5", [ts], [5800.00]),
+            _make_df("ESH5", [friday, monday], [5800.00, 5801.00]),
             es_instrument,
             "ESH5",
-            "20250307T000000",
+            "20250310T000000",
             tmp_settings,
         )
         save_raw_dump(
-            _make_df("ESM5", [ts], [5810.00]),
+            _make_df("ESM5", [friday, monday], [5810.00, 5811.00]),
             es_instrument,
             "ESM5",
-            "20250307T000001",
+            "20250310T000001",
             tmp_settings,
         )
         aggregate(es_instrument, tmp_settings)
 
-        df = query(es_instrument, tmp_settings, sample_chain)
-        assert df.height == 1
-        assert df["ticker"][0] == "ESM5"
-        assert df["open"][0] == 5810.00
+        df = query(
+            es_instrument,
+            tmp_settings,
+            sample_chain,
+            timezone="America/Chicago",
+            intraday_begin=time(4, 0),
+            intraday_end=time(16, 0),
+        )
+        assert df.height == 2
+        assert df["ticker"].cast(pl.Utf8).to_list() == ["ESH5", "ESM5"]
+        assert df["open"].to_list() == [5800.00, 5811.00]
 
     def test_query_no_dedup_timestamps_keeps_both_contracts(
         self, tmp_settings, es_instrument, sample_chain
