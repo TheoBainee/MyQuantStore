@@ -599,7 +599,8 @@ def check_ticksize_accuracy(
 
 ### 8.3bis Audit des trous de données 1min (`doctor gaps`)
 
-`storage/gaps.py` (`find_gaps`, `confirm_gaps`), exposé par `myquantstore doctor gaps`.
+`storage/gaps.py` (`audit_gaps` ; `find_gaps` / `confirm_gaps` = enveloppes), exposé par
+`myquantstore doctor gaps`.
 Lecture seule de l'agrégé 1min : aucune donnée n'est modifiée ni fabriquée.
 
 - **Plage** `[intraday_begin, intraday_end)` en heures murales du fuseau `resolve_timezone`
@@ -612,8 +613,9 @@ Lecture seule de l'agrégé 1min : aucune donnée n'est modifiée ni fabriquée.
   Le bord de début de la 1re session et le bord de fin de la dernière sont ignorés (début
   d'historique, fetch en cours de séance). Les sessions attendues sans aucune barre (lun-ven,
   dim-jeu en wrap-around) sont listées à part (fériés probables), hors code de sortie.
-- **Confirmation croisée** : pour chaque trou, `confirm_gaps` cherche (``search_sorted``) si un
-  autre instrument du même type ayant un agrégé 1min a au moins une barre dans `[start, end)`.
+- **Confirmation croisée** : un trou est confirmé si un autre instrument du même type ayant un
+  agrégé 1min a au moins une barre dans `[start, end)` (``join_asof`` avant, un par pair, sur
+  ses timestamps triés : tous les trous d'un coup, coût indépendant du nombre de trous).
   Confirmé → panne de flux sur ce produit (ex: NQ/RTY le 2026-09-11 12:00-14:00 CT alors que ES/YM
   sont complets) ; non confirmé → férié / clôture anticipée commune (ex: Labor Day 12:00 CT).
 - **Calendrier de marché** (`explain_gaps`, calendrier de `market_calendar.views.load_calendar`,
@@ -623,6 +625,14 @@ Lecture seule de l'agrégé 1min : aucune donnée n'est modifiée ni fabriquée.
   vides couvertes sont réparties entre `closed_sessions` (fermées, avec libellé) et
   `expected_empty_sessions` (séance prévue dans la plage mais aucune barre, ⚠). Futures :
   schedules du produit ; stocks/indices : fériés NYSE/NASDAQ ; forex : aucun calendrier.
+- **Pipeline** (`audit_gaps`, tous les instruments en une fois) : agrégés scannés en lazy
+  (`scan_parquet`, projection `window_start` / `ticker`, filtre `--start` / `--end` poussé
+  à la lecture) → **phase 1** `collect_all` : barres de la plage par session (une seule
+  conversion de fuseau) et timestamps triés des pairs, en mémoire → **phase 2** `collect_all` :
+  trous internes + bords (bornes de plage calculées en Polars, même règle DST que
+  `zoneinfo` `fold=0`) et confirmation. Équivalence vérifiée par un oracle minute par minute
+  (`tests/test_gaps.py::TestAuditGapsOracle`). Ordre de grandeur : 4 instruments × 24 mois
+  < 1 s de calcul ; au-delà de quelques milliers de trous, l'affichage du tableau domine.
   `--no-calendar` rétablit le comportement sans calendrier.
 - **Sortie** : tableau par instrument (session, début, fin, durée, position, contrat, statut),
   puis bilan. Exit 1 s'il reste au moins un trou confirmé non attendu ; `--confirmed-only`

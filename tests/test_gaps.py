@@ -6,6 +6,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import numpy as np
 import polars as pl
 import pytest
 
@@ -13,7 +14,7 @@ from myquantstore.cli import main
 from myquantstore.config import load_settings
 from myquantstore.instruments import Instrument, InstrumentType
 from myquantstore.pipeline.aggregator import aggregate
-from myquantstore.storage.gaps import confirm_gaps, find_gaps, unique_timestamps
+from myquantstore.storage.gaps import audit_gaps, confirm_gaps, find_gaps, unique_timestamps
 from myquantstore.storage.raw_dumps import save_raw_dump
 
 CHI = ZoneInfo("America/Chicago")
@@ -160,6 +161,121 @@ class TestFindGaps:
             _find(_df([], "NQU6"), intraday_begin=time(7), intraday_end=time(7))
         with pytest.raises(ValueError):
             _find(_df([], "NQU6"), min_gap_minutes=0)
+
+
+def _oracle(
+    bars: dict[str, list[datetime]],
+    key: str,
+    begin: time,
+    end: time,
+    min_gap: int,
+) -> list[tuple[date, datetime, datetime, str, tuple[str, ...]]]:
+    """Référence minute par minute, indépendante de l'implémentation vectorisée."""
+    wrap = begin > end
+    present = set(bars[key])
+    sessions: set[date] = set()
+    for t in present:
+        local = t.astimezone(CHI)
+        inside = (
+            (local.time() >= begin or local.time() < end) if wrap else begin <= local.time() < end
+        )
+        if inside:
+            sessions.add(
+                local.date() - timedelta(days=1) if wrap and local.time() < end else local.date()
+            )
+    first, last = min(sessions), max(sessions)
+    out = []
+    for sess in sorted(sessions):
+        lo = datetime.combine(sess, begin, tzinfo=CHI).astimezone(UTC)
+        hi = datetime.combine(
+            sess + timedelta(days=1) if wrap else sess, end, tzinfo=CHI
+        ).astimezone(UTC)
+        minutes = []
+        t = lo
+        while t < hi:
+            minutes.append(t)
+            t += timedelta(minutes=1)
+        run: list[datetime] = []
+        for m in [*minutes, None]:
+            if m is not None and m not in present:
+                run.append(m)
+                continue
+            if len(run) >= min_gap:
+                g_start, g_end = run[0], run[-1] + timedelta(minutes=1)
+                position = "début" if g_start == lo else "fin" if g_end == hi else "milieu"
+                skip = (position == "début" and sess == first) or (
+                    position == "fin" and sess == last
+                )
+                if not skip:
+                    peers = tuple(
+                        k
+                        for k, ts in bars.items()
+                        if k != key and any(g_start <= x < g_end for x in ts)
+                    )
+                    out.append((sess, g_start, g_end, position, peers))
+            run = []
+    return sorted(out, key=lambda g: g[1])
+
+
+class TestAuditGapsOracle:
+    """audit_gaps (lazy, collect_all, join_asof) = oracle minute par minute."""
+
+    @pytest.mark.parametrize("seed", [0, 1, 2])
+    @pytest.mark.parametrize(
+        ("begin", "end", "min_gap"),
+        [(time(7), time(15), 5), (time(4), time(16), 1), (time(17), time(4), 3)],
+    )
+    def test_matches_oracle(self, seed, begin, end, min_gap):
+        rng = np.random.default_rng(seed)
+        # 5 au 13 mars 2026 : inclut le passage à l'heure d'été US (8 mars)
+        base = datetime(2026, 3, 5, tzinfo=UTC)
+        grid = [base + timedelta(minutes=i) for i in range(9 * 24 * 60)]
+        grid = [t for t in grid if t.astimezone(CHI).weekday() < 5]
+        bars: dict[str, list[datetime]] = {}
+        for sym, blocks in [("ES", 3), ("NQ", 12), ("RTY", 25)]:
+            keep = np.ones(len(grid), bool)
+            for _ in range(blocks):
+                a = int(rng.integers(0, len(grid)))
+                keep[a : a + int(rng.integers(1, 90))] = False
+            bars[f"futures:{sym}"] = [t for t, k in zip(grid, keep, strict=True) if k]
+        frames = {k: _df(ts, k.split(":")[1] + "H6") for k, ts in bars.items()}
+        reports = audit_gaps(
+            frames,
+            dict.fromkeys(frames, TZ),
+            {k: list(frames) for k in frames},
+            intraday_begin=begin,
+            intraday_end=end,
+            min_gap_minutes=min_gap,
+        )
+        for key in frames:
+            got = [
+                (g.session, g.start, g.end, g.position, tuple(g.confirmed_by))
+                for g in reports[key].gaps
+            ]
+            assert got == _oracle(bars, key, begin, end, min_gap), key
+
+    def test_lazy_input_and_period_pushdown(self, tmp_path):
+        """scan_parquet (lazy) + start/end = même résultat que le DataFrame en mémoire."""
+        holes = {HOLE_DAY: [(time(12), time(14))]}
+        nq = _df(_bars(DAYS, time(4), time(16), holes=holes), "NQU6")
+        es = _df(_bars(DAYS, time(4), time(16)), "ESU6")
+        paths = {}
+        for key, df in {"futures:NQ": nq, "futures:ES": es}.items():
+            paths[key] = tmp_path / f"{key.split(':')[1]}.parquet"
+            df.write_parquet(paths[key])
+        kw = {
+            "intraday_begin": time(7),
+            "intraday_end": time(15),
+            "min_gap_minutes": 5,
+            "start": HOLE_DAY,
+            "end": HOLE_DAY,
+        }
+        targets = {"futures:NQ": TZ}
+        peers = {"futures:NQ": ["futures:NQ", "futures:ES"]}
+        lazy = audit_gaps({k: pl.scan_parquet(p) for k, p in paths.items()}, targets, peers, **kw)
+        eager = audit_gaps({"futures:NQ": nq, "futures:ES": es}, targets, peers, **kw)
+        assert lazy["futures:NQ"] == eager["futures:NQ"]
+        assert [g.confirmed_by for g in lazy["futures:NQ"].gaps] == [["futures:ES"]]
 
 
 class TestQualityConfig:

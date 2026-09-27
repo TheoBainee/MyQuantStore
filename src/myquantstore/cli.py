@@ -1990,8 +1990,8 @@ def _cmd_doctor_gaps(args: argparse.Namespace) -> int:
     from myquantstore.instruments import RESOLUTION_1MIN
     from myquantstore.market_calendar.views import load_calendar
     from myquantstore.query.timezone import resolve_timezone
-    from myquantstore.storage.aggregate_cache import aggregate_exists, read_aggregate
-    from myquantstore.storage.gaps import confirm_gaps, explain_gaps, find_gaps, unique_timestamps
+    from myquantstore.storage.aggregate_cache import aggregate_exists
+    from myquantstore.storage.gaps import audit_gaps, explain_gaps
 
     try:
         settings = load_settings()
@@ -2045,39 +2045,48 @@ def _cmd_doctor_gaps(args: argparse.Namespace) -> int:
         console.print("[yellow]Aucun agrégé 1min pour les instruments demandés.[/yellow]")
         return 0
 
-    # Agrégés lus une fois ; pairs = instruments du même type (confirmation croisée)
-    frames: dict[str, pl.DataFrame] = {}
+    # Pairs = instruments du même type avec agrégé 1min (confirmation croisée).
+    # Agrégés scannés en lazy (window_start / ticker seulement) ; détection et
+    # confirmation de tous les instruments en un seul collect_all (audit_gaps).
+    peers_by_type: dict[InstrumentType, list[Instrument]] = {}
+    for inst in targets:
+        if inst.type not in peers_by_type:
+            peers_by_type[inst.type] = [
+                p
+                for p in settings.instruments_of_type(inst.type)
+                if aggregate_exists(p, settings, resolution=RESOLUTION_1MIN)
+            ]
+    frames = {
+        p.key: pl.scan_parquet(settings.aggregate_path(p, resolution=RESOLUTION_1MIN))
+        for insts in peers_by_type.values()
+        for p in insts
+    }
+    for inst in targets:
+        frames.setdefault(
+            inst.key, pl.scan_parquet(settings.aggregate_path(inst, resolution=RESOLUTION_1MIN))
+        )
+    timezones = {
+        inst.key: resolve_timezone(settings, inst, override=args.timezone) for inst in targets
+    }
+    reports = audit_gaps(
+        frames,
+        timezones,
+        {inst.key: [p.key for p in peers_by_type[inst.type]] for inst in targets},
+        intraday_begin=begin,
+        intraday_end=end,
+        min_gap_minutes=min_gap,
+        start=start,
+        end=stop,
+    )
 
-    def _frame(inst: Instrument) -> pl.DataFrame:
-        if inst.key not in frames:
-            frames[inst.key] = read_aggregate(inst, settings, resolution=RESOLUTION_1MIN)
-        return frames[inst.key]
-
-    peers_by_type: dict[InstrumentType, dict[str, pl.Series]] = {}
     total_confirmed = 0
     total_unconfirmed = 0
     total_expected = 0
 
     for inst in targets:
-        tz = resolve_timezone(settings, inst, override=args.timezone)
-        if inst.type not in peers_by_type:
-            peers_by_type[inst.type] = {
-                p.key: unique_timestamps(_frame(p))
-                for p in settings.instruments_of_type(inst.type)
-                if aggregate_exists(p, settings, resolution=RESOLUTION_1MIN)
-            }
+        tz = timezones[inst.key]
         peers = peers_by_type[inst.type]
-        report = find_gaps(
-            _frame(inst),
-            instrument_key=inst.key,
-            intraday_begin=begin,
-            intraday_end=end,
-            timezone=tz,
-            min_gap_minutes=min_gap,
-            start=start,
-            end=stop,
-        )
-        confirm_gaps(report, peers)
+        report = reports[inst.key]
         calendar = None if args.no_calendar else load_calendar(settings, inst)
         if calendar is not None:
             explain_gaps(
