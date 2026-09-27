@@ -6,6 +6,7 @@ Commandes disponibles :
 - ``myquantstore init`` : bootstrap XDG (config + dirs + clé optionnelle).
 - ``myquantstore doctor`` : diagnostic install / config / chemins.
   ``doctor overlays`` : validation du dossier overlays contre le contrat meta.json v2.
+  ``doctor gaps`` : audit des trous de données 1min (plage intraday, confirmation croisée).
 - ``myquantstore setup-key`` : clé API Massive dans ``~/.config/myquantstore/.env``.
 - ``myquantstore schedule`` : jobs périodiques fetch (OHLCV) et caches (Massive).
 - ``myquantstore config`` : affiche la config résolue (clé masquée) + chemin du fichier.
@@ -432,6 +433,69 @@ def _build_parser() -> argparse.ArgumentParser:
         "--overlay-dir",
         default=None,
         help="Racine overlays à valider (défaut: [chart.overlay] overlay_dir)",
+    )
+    p_doctor_gaps = doctor_sub.add_parser(
+        "gaps",
+        help="Audite les trous de données 1min dans une plage horaire intraday",
+        description=(
+            "Lit l'agrégé 1min et signale, par session, les minutes sans chandelier\n"
+            "dans la plage [--intraday-begin, --intraday-end) au-delà de --min-gap-minutes.\n"
+            "Un trou est CONFIRMÉ si un autre instrument du même type a des barres pendant\n"
+            "ce créneau (panne de flux) ; non confirmé sinon (férié, clôture anticipée).\n"
+            "Lecture seule. Exit 1 si au moins un trou confirmé."
+        ),
+        epilog=(
+            "Exemples:\n"
+            "  myquantstore doctor gaps\n"
+            "  myquantstore doctor gaps --type futures --start 2026-09-01\n"
+            "  myquantstore doctor gaps -i NQ --intraday-begin 08:30 --intraday-end 15:00\n"
+            "  myquantstore doctor gaps --intraday-begin 17:00 --intraday-end 04:00 "
+            "--min-gap-minutes 30"
+        ),
+        formatter_class=_HELP_FMT,
+    )
+    _add_instrument_filter(p_doctor_gaps)
+    p_doctor_gaps.add_argument(
+        "--intraday-begin",
+        default=None,
+        metavar="HH:MM",
+        help="Début de plage auditée (défaut: [quality] intraday_begin ; wrap-around OK)",
+    )
+    p_doctor_gaps.add_argument(
+        "--intraday-end",
+        default=None,
+        metavar="HH:MM",
+        help="Fin de plage auditée, exclusive (défaut: [quality] intraday_end)",
+    )
+    p_doctor_gaps.add_argument(
+        "--timezone",
+        default=None,
+        metavar="IANA",
+        help="Fuseau de la plage (défaut: resolve_timezone = [chart] timezone)",
+    )
+    p_doctor_gaps.add_argument(
+        "--min-gap-minutes",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Durée minimale d'un trou signalé (défaut: [quality] min_gap_minutes)",
+    )
+    p_doctor_gaps.add_argument(
+        "--start",
+        default=None,
+        metavar="DATE",
+        help="Première session auditée, incluse (YYYY-MM-DD). Défaut: début de l'agrégé",
+    )
+    p_doctor_gaps.add_argument(
+        "--end",
+        default=None,
+        metavar="DATE",
+        help="Dernière session auditée, incluse (YYYY-MM-DD). Défaut: fin de l'agrégé",
+    )
+    p_doctor_gaps.add_argument(
+        "--confirmed-only",
+        action="store_true",
+        help="N'affiche que les trous confirmés par un autre instrument",
     )
 
     # --- setup-key ---
@@ -1793,10 +1857,152 @@ def _cmd_doctor_overlays(args: argparse.Namespace) -> int:
     return 1 if skipped else 0
 
 
+def _cmd_doctor_gaps(args: argparse.Namespace) -> int:
+    """``doctor gaps`` : trous 1min dans une plage intraday (CLI > [quality] > défaut)."""
+    from datetime import date, time
+    from zoneinfo import ZoneInfo
+
+    import polars as pl
+
+    from myquantstore.instruments import RESOLUTION_1MIN
+    from myquantstore.query.timezone import resolve_timezone
+    from myquantstore.storage.aggregate_cache import aggregate_exists, read_aggregate
+    from myquantstore.storage.gaps import confirm_gaps, find_gaps, unique_timestamps
+
+    try:
+        settings = load_settings()
+    except FileNotFoundError as exc:
+        console.print(f"[red]Erreur:[/red] {exc}")
+        console.print("[dim]Lancez `myquantstore init` pour créer la configuration.[/dim]")
+        return 1
+
+    try:
+        begin = (
+            time.fromisoformat(args.intraday_begin)
+            if args.intraday_begin
+            else settings.quality_intraday_begin
+        )
+        end = (
+            time.fromisoformat(args.intraday_end)
+            if args.intraday_end
+            else settings.quality_intraday_end
+        )
+        start = date.fromisoformat(args.start) if args.start else None
+        stop = date.fromisoformat(args.end) if args.end else None
+        targets = _resolve_instruments(settings, args.instrument, args.type)
+    except ValueError as exc:
+        console.print(f"[red]Erreur:[/red] {exc}")
+        return 1
+    min_gap = (
+        args.min_gap_minutes
+        if args.min_gap_minutes is not None
+        else settings.quality_min_gap_minutes
+    )
+    if min_gap < 1:
+        console.print("[red]Erreur:[/red] --min-gap-minutes doit être >= 1")
+        return 1
+    if begin == end:
+        console.print("[red]Erreur:[/red] --intraday-begin et --intraday-end doivent différer")
+        return 1
+
+    targets = [i for i in targets if aggregate_exists(i, settings, resolution=RESOLUTION_1MIN)]
+    console.print("[bold]== doctor gaps ==[/bold]")
+    console.print(
+        f"  plage {begin:%H:%M}–{end:%H:%M} · seuil {min_gap} min"
+        + (f" · sessions {start or '…'} → {stop or '…'}" if start or stop else "")
+    )
+    if not targets:
+        console.print("[yellow]Aucun agrégé 1min pour les instruments demandés.[/yellow]")
+        return 0
+
+    # Agrégés lus une fois ; pairs = instruments du même type (confirmation croisée)
+    frames: dict[str, pl.DataFrame] = {}
+
+    def _frame(inst: Instrument) -> pl.DataFrame:
+        if inst.key not in frames:
+            frames[inst.key] = read_aggregate(inst, settings, resolution=RESOLUTION_1MIN)
+        return frames[inst.key]
+
+    peers_by_type: dict[InstrumentType, dict[str, pl.Series]] = {}
+    total_confirmed = 0
+    total_unconfirmed = 0
+
+    for inst in targets:
+        tz = resolve_timezone(settings, inst, override=args.timezone)
+        if inst.type not in peers_by_type:
+            peers_by_type[inst.type] = {
+                p.key: unique_timestamps(_frame(p))
+                for p in settings.instruments_of_type(inst.type)
+                if aggregate_exists(p, settings, resolution=RESOLUTION_1MIN)
+            }
+        peers = peers_by_type[inst.type]
+        report = find_gaps(
+            _frame(inst),
+            instrument_key=inst.key,
+            intraday_begin=begin,
+            intraday_end=end,
+            timezone=tz,
+            min_gap_minutes=min_gap,
+            start=start,
+            end=stop,
+        )
+        confirm_gaps(report, peers)
+        confirmed = [g for g in report.gaps if g.confirmed_by]
+        unconfirmed = [g for g in report.gaps if not g.confirmed_by]
+        total_confirmed += len(confirmed)
+        total_unconfirmed += len(unconfirmed)
+
+        console.print(
+            f"\n[bold]{inst.key}[/bold] — {report.sessions_checked} session(s) auditée(s) ({tz}) : "
+            f"[red]{len(confirmed)} confirmé(s)[/red], {len(unconfirmed)} non confirmé(s)"
+        )
+        if len(peers) < 2:
+            console.print(
+                f"  [dim]aucun autre instrument {inst.type.value} avec agrégé 1min : "
+                "confirmation impossible[/dim]"
+            )
+        shown = confirmed if args.confirmed_only else report.gaps
+        if shown:
+            table = Table(show_header=True, header_style="bold")
+            for col in ("Session", "Début", "Fin", "Durée", "Position", "Contrat", "Statut"):
+                table.add_column(col)
+            for gap in shown:
+                status = (
+                    f"[red]CONFIRMÉ[/red] ({', '.join(k.split(':', 1)[-1] for k in gap.confirmed_by)})"
+                    if gap.confirmed_by
+                    else "[dim]non confirmé[/dim]"
+                )
+                table.add_row(
+                    gap.session.isoformat(),
+                    gap.start.astimezone(ZoneInfo(tz)).strftime("%H:%M"),
+                    gap.end.astimezone(ZoneInfo(tz)).strftime("%H:%M"),
+                    f"{gap.minutes} min",
+                    gap.position,
+                    gap.ticker,
+                    status,
+                )
+            console.print(table)
+        if report.empty_sessions:
+            listed = ", ".join(d.isoformat() for d in report.empty_sessions[:10])
+            more = "…" if len(report.empty_sessions) > 10 else ""
+            console.print(
+                f"  [dim]{len(report.empty_sessions)} session(s) sans aucune barre "
+                f"(fériés probables) : {listed}{more}[/dim]"
+            )
+
+    console.print(
+        f"\n{total_confirmed} trou(s) confirmé(s), {total_unconfirmed} non confirmé(s) "
+        f"sur {len(targets)} instrument(s)."
+    )
+    return 1 if total_confirmed else 0
+
+
 def _cmd_doctor(args: argparse.Namespace) -> int:
-    """Commande ``doctor`` : diagnostic install, ou ``doctor overlays``."""
+    """Commande ``doctor`` : diagnostic install, ``doctor overlays`` ou ``doctor gaps``."""
     if getattr(args, "doctor_command", None) == "overlays":
         return _cmd_doctor_overlays(args)
+    if getattr(args, "doctor_command", None) == "gaps":
+        return _cmd_doctor_gaps(args)
 
     from myquantstore.onboarding import run_doctor
 

@@ -229,6 +229,7 @@ Flag racine : `myquantstore -v|--verbose <commande>` force le logging DEBUG (ove
 |---|---|
 | `myquantstore init [--minimal\|--full] [-k KEY]` | Bootstrap XDG (config + dirs + clé optionnelle) |
 | `myquantstore doctor [--ping]` | Diagnostic install / config / chemins (exit 1 si bloquant) |
+| `myquantstore doctor gaps [--instrument NQ] [--type futures] [--intraday-begin HH:MM] [--intraday-end HH:MM] [--timezone IANA] [--min-gap-minutes N] [--start] [--end] [--confirmed-only]` | Audit des trous de données 1min ; exit 1 si un trou est confirmé par un autre instrument |
 | `myquantstore setup-key [-k KEY] [-y]` | Configure la clé API dans `~/.config/myquantstore/.env` |
 | `myquantstore schedule {install\|run\|status\|show\|uninstall} [fetch\|caches]` | Jobs périodiques : fetch (OHLCV sam. 07h) et caches (Massive sam. 03h) |
 | `myquantstore config` | Affiche la configuration résolue (clé masquée) + chemin du fichier |
@@ -286,6 +287,24 @@ myquantstore query NQ --intraday-begin 09:30 --intraday-end 16:00
 ```
 
 > **Note sur les types** : les colonnes `volume` et `transactions` sont stockées en `Int32` dans le Parquet agrégé (et non `Int64` comme retourné par l'API). Ce cast est fait une fois au moment de l'agrégation (`myquantstore aggregate`) et persisté dans le Parquet. Si vous avez un cache agrégé antérieur à cette version, relancez `myquantstore aggregate --instrument <symbol>` pour bénéficier du cast.
+
+### Audit des trous de données (`myquantstore doctor gaps`)
+
+Signale les minutes sans chandelier dans une plage horaire intraday, sur l'agrégé 1min
+(lecture seule). La plage et le seuil viennent des flags, sinon de `[quality]`
+(`intraday_begin`, `intraday_end`, `min_gap_minutes` — défaut 07:00-15:00, 5 min),
+dans le fuseau `[chart] timezone`. Auditer une plage liquide limite les faux positifs.
+
+Chaque trou est comparé aux autres instruments du même type : **CONFIRMÉ** si l'un d'eux
+a des données pendant ce créneau (panne de flux sur ce produit), **non confirmé** sinon
+(férié, clôture anticipée qui touche tout le monde). La commande sort en exit 1 seulement
+s'il reste un trou confirmé — utilisable comme garde-fou après un `fetch`.
+
+```bash
+myquantstore doctor gaps                                   # [quality] ou 07:00-15:00
+myquantstore doctor gaps --type futures --start 2026-09-01 --confirmed-only
+myquantstore doctor gaps -i NQ --intraday-begin 17:00 --intraday-end 04:00 --min-gap-minutes 30
+```
 
 ### Visualisation interactive (`myquantstore chart`)
 

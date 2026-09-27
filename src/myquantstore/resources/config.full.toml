@@ -74,6 +74,15 @@ stale_lag_days_1min = 3
 stale_lag_days_1day = 5
 cross_resolution_lag_days = 7
 
+[quality]
+# Audit des trous de données 1min : `myquantstore doctor gaps`.
+# Plage horaire auditée (HH:MM, fuseau [chart] timezone). Les plages peu liquides
+# (ex: 17:00-04:00) génèrent plus de faux positifs. Wrap-around accepté (begin > end).
+intraday_begin = "07:00"
+intraday_end = "15:00"
+# Durée manquante minimale (minutes) pour signaler un trou.
+min_gap_minutes = 5
+
 [yahoo]
 # Track extraday daily multi-type via chart API (curl_cffi).
 # Mapping: stocks (.→-), forex =X, indices ^, futures continuous =F.

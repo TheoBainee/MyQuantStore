@@ -142,6 +142,10 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
   - Warn si `|lag_1min - lag_1day| > cross_resolution_lag_days` (défaut 7).
   - `status` affiche lag + STALE ; `status --check` exit 1 si problème (cron / `schedule run`).
   - Résumé `fetch` : `latest=` / `lag=` / `⚠ STALE` (warn only — pas de soft-skip ; utiliser `--force`).
+- **Trous de données 1min** (`storage/gaps.py`, `myquantstore doctor gaps`, config `[quality]`) :
+  - Lecture seule de l'agrégé 1min (jamais de modification ni de remplissage). Plage auditée `[intraday_begin, intraday_end)` en heures murales du fuseau `resolve_timezone` ; priorité flag CLI (`--intraday-begin`, `--intraday-end`, `--min-gap-minutes`, `--timezone`) > `[quality]` > défaut (07:00-15:00, 5 min). Wrap-around accepté (session = date du soir).
+  - Seules les sessions avec au moins une barre sont auditées (trous internes + bords de plage) ; bord de début de la 1re session et bord de fin de la dernière ignorés ; sessions vides (fériés probables) listées à part.
+  - **Confirmation croisée** : trou CONFIRMÉ si un autre instrument du même type (avec agrégé 1min) a des barres pendant le créneau (panne de flux), non confirmé sinon (férié, clôture anticipée). Exit 1 seulement s'il reste un trou confirmé ; `--confirmed-only` filtre l'affichage.
 
 ### Tests & Qualité
 - Tests pytest + respx (mocks API).

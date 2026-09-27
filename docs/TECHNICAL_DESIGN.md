@@ -190,7 +190,8 @@ Validations pydantic : `overlap_buffer_days >= 0`, `days_before_expiry >= 0`, au
 un instrument configuré, `history_months.<type> >= 1`, `requests_per_minute >= 0`,
 `max_retries >= 1`, `page_limit` / `contracts_page_limit` / splits-dividends dans les
 bornes API, `data_quality_trigger > 0`, `display_max_rows/columns >= 1`,
-`default_timescale_unit` ∈ {`min`, `hour`, `day`, `week`}, paramètres chart `>= 1`.
+`default_timescale_unit` ∈ {`min`, `hour`, `day`, `week`}, paramètres chart `>= 1`,
+`[quality]` : `intraday_begin` / `intraday_end` au format `HH:MM`, `min_gap_minutes >= 1`.
 
 > **Note** : `normalize_tick_size` n'est pas un paramètre de configuration — c'est un
 > **flag de la commande `query`** (`--normalize-tick-size`). Voir aussi `docs/MULTI_TYPE.md`.
@@ -593,6 +594,27 @@ def check_ticksize_accuracy(
 
 ⚠️ **Incompatibilité** : `--normalize-tick-size` et `--adjust` sont **mutuellement exclusifs**. Si les deux sont passés simultanément, le CLI lève une erreur explicite : `ValueError: normalize_tick_size et adjust_rollover sont incompatibles`. L'ajustement (rollover/dividendes) s'applique en prix réels (Float64) ; la normalisation tick produit des Int32 — les deux ne peuvent pas être combinés.
 
+### 8.3bis Audit des trous de données 1min (`doctor gaps`)
+
+`storage/gaps.py` (`find_gaps`, `confirm_gaps`), exposé par `myquantstore doctor gaps`.
+Lecture seule de l'agrégé 1min : aucune donnée n'est modifiée ni fabriquée.
+
+- **Plage** `[intraday_begin, intraday_end)` en heures murales du fuseau `resolve_timezone`
+  (override `--timezone`). Priorité : flags CLI > `[quality]` > défaut (07:00-15:00).
+  Wrap-around (`begin > end`, ex: 17:00-04:00) : la session porte la date du soir.
+- **Sessions** : seules celles contenant au moins une barre sont auditées. Trou interne =
+  écart ≥ `min_gap_minutes` + 1 min entre deux barres consécutives ; trous de bord = première
+  barre en retard / dernière en avance sur la plage (bornes calculées en `zoneinfo`, DST gérée).
+  Le bord de début de la 1re session et le bord de fin de la dernière sont ignorés (début
+  d'historique, fetch en cours de séance). Les sessions attendues sans aucune barre (lun-ven,
+  dim-jeu en wrap-around) sont listées à part (fériés probables), hors code de sortie.
+- **Confirmation croisée** : pour chaque trou, `confirm_gaps` cherche (``search_sorted``) si un
+  autre instrument du même type ayant un agrégé 1min a au moins une barre dans `[start, end)`.
+  Confirmé → panne de flux sur ce produit (ex: NQ/RTY le 2026-09-11 12:00-14:00 CT alors que ES/YM
+  sont complets) ; non confirmé → férié / clôture anticipée commune (ex: Labor Day 12:00 CT).
+- **Sortie** : tableau par instrument (session, début, fin, durée, position, contrat, statut),
+  puis bilan. Exit 1 s'il reste au moins un trou confirmé ; `--confirmed-only` filtre l'affichage.
+
 ### 8.4 Dumps pseudo-bruts
 
 Les fichiers dans `data/raw/` sont des **dumps pseudo-bruts** : données API après normalisation minimale au format interne canonique (timestamps convertis, champs normalisés, colonnes d'identité ajoutées, casts appliqués). Pas de réponse JSON brute.
@@ -890,6 +912,7 @@ Flag racine : `-v` / `--verbose` (avant la sous-commande) force le logging DEBUG
 | `myquantstore chart [product]` | Serveur visualisation : dashboard `/` ; avec arg ouvre `/{type}:{symbol}`. Cascade 1day pour miniatures si manquant. | `--port`, `--host`, `--mdns`, `--timescale-unit`, `--timescale-nb`, `--nb-candle`, `--intraday-begin`, `--intraday-end`, `--normalize-tick-size`, `--adjust`, `--no-split`, `--forward-fill`, `--no-cascade` |
 | `myquantstore serve` | API HTTP `query()` (Parquet / Arrow). Pas de cascade, pas d'auth v1. Bind `[serve]` si flags absents. | `--host`, `--port` |
 | `myquantstore status` | Snapshot par instrument : dumps, agrégé, lag/STALE, listing cache. | `--instrument ES`, `--type`, `--check`, `--strict-missing`, `--tickers` |
+| `myquantstore doctor gaps` | Audit lecture seule des trous 1min dans une plage intraday (§8.3bis). Exit 1 si un trou est confirmé par un autre instrument du même type. | `--instrument`, `--type`, `--intraday-begin`, `--intraday-end`, `--timezone`, `--min-gap-minutes`, `--start`, `--end`, `--confirmed-only` |
 | `myquantstore schedule` | Jobs OS : fetch (OHLCV) + caches (Massive). | `install\|run\|status\|show\|uninstall` `[fetch\|caches]` |
 | `myquantstore portfolio` | MPT stocks 1day. | `stats\|corr\|cov\|optimize\|allocate\|frontier` |
 
@@ -1177,6 +1200,7 @@ tickers d'agrégat, le contrat courant et sa maturité (cache local). Réponse d
 | `test_rollover.py` | Expiration vendredi 19 → dernier jour conservé vendredi 12 ; lundi suivant = nouveau contrat ; `continuous_segments` correct ; `tick_size_for_ticker` ; `to_table()` |
 | `test_stocks_fetch.py` / `test_v2_single_fetch.py` / `test_yahoo_api.py` | Fetchers multi-type + Yahoo daily (ranges, skip jour, reverse split) |
 | `test_reader.py` | `adjust_rollover=False` retourne chaîne ; `True` applique back-adjust futures / dividends stocks ; filtres `start`/`end` ; `normalize_tick_size` Int32 ; `check_ticksize_accuracy` bilan ; incompatibilité `normalize_tick_size` × `adjust_rollover` ; resampling / intraday |
+| `test_gaps.py` | Trou interne confirmé / non confirmé ; seuil ; hors plage ; bords début/fin ; bords 1re/dernière session ignorés ; wrap-around 17:00-04:00 ; sessions vides ; filtres start/end ; config `[quality]` ; CLI `doctor gaps` (exit 1, override flags, fallback config, erreur de format) |
 | `test_resampler.py` | Cohérence du bucketing (anchor par session) ; drop des partiels de fin ; gaps conservés (`candle_count < k`) ; agrégation OHLCV (open=first, high=max, low=min, close=last) ; k=1 noop ; k invalide (`< 1`) ; intraday normal (`begin < end`) ; intraday wrap-around (`begin > end`) ; `begin == end` lève `ValueError` ; cohérence intraday+resample ; drop partial avec intraday |
 | `test_chart_server.py` | Dashboard `/` multi-type ; page HTML + bouton maison ; static JS ; `/api/candles` Arrow IPC ; `before` ; timescale 7min ; unit invalide → 400 ; `forward_fill` opt-in ; `/api/meta` ; `/api/thumbnail` SVG ; product inconnu → 404 ; sparklines unit |
 | `test_serve.py` | `/v1/health` 200/503 ; `/v1/instruments` ; `/v1/query` Parquet/Arrow 200/400/404 ; dédup roll défaut / `dedup_timestamps=false` ; `forward_fill=true` ; CLI `--host`/`--port` |

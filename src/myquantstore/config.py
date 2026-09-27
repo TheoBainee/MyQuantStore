@@ -190,6 +190,13 @@ class Settings(BaseSettings):
     # Warn si |lag_1min - lag_1day| > seuil (dual-source).
     health_cross_resolution_lag_days: int = 7
 
+    # --- Qualité / audit des trous 1min (config.toml: [quality]) — doctor gaps ---
+    # Plage horaire auditée (HH:MM, heures murales du fuseau résolu). CLI override.
+    quality_intraday_begin: time = time(7, 0)
+    quality_intraday_end: time = time(15, 0)
+    # Durée manquante minimale (minutes) pour signaler un trou.
+    quality_min_gap_minutes: int = 5
+
     # --- Futures (config.toml: [futures]) — spécifique au type futures ---
     days_before_expiry: int = 7
     contracts_page_limit: int = 1000  # max API = 1000 pour /futures/v1/contracts
@@ -326,6 +333,23 @@ class Settings(BaseSettings):
     def _health_lag_non_neg(cls, v: int) -> int:
         if v < 0:
             raise ValueError("seuils health lag doivent être >= 0")
+        return v
+
+    @field_validator("quality_intraday_begin", "quality_intraday_end", mode="before")
+    @classmethod
+    def _quality_intraday_time(cls, v: Any, info: ValidationInfo) -> time:
+        if isinstance(v, time):
+            return v
+        try:
+            return time.fromisoformat(str(v).strip())
+        except ValueError as exc:
+            raise ValueError(f"{info.field_name} doit être HH:MM (reçu: {v!r})") from exc
+
+    @field_validator("quality_min_gap_minutes")
+    @classmethod
+    def _quality_min_gap_ge_1(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("quality min_gap_minutes doit être >= 1")
         return v
 
     @field_validator("days_before_expiry")
@@ -825,6 +849,7 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
     portfolio_cfg = toml_data.get("portfolio", {})
     yahoo_cfg = toml_data.get("yahoo", {})
     health_cfg = toml_data.get("health", {})
+    quality_cfg = toml_data.get("quality", {})
 
     # On utilise model_dump + update + reconstruct pour rester typé et validé
     data = settings.model_dump()
@@ -969,6 +994,14 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
             ),
             "health_cross_resolution_lag_days": health_cfg.get(
                 "cross_resolution_lag_days", data["health_cross_resolution_lag_days"]
+            ),
+            # [quality] — audit des trous 1min (doctor gaps)
+            "quality_intraday_begin": quality_cfg.get(
+                "intraday_begin", data["quality_intraday_begin"]
+            ),
+            "quality_intraday_end": quality_cfg.get("intraday_end", data["quality_intraday_end"]),
+            "quality_min_gap_minutes": quality_cfg.get(
+                "min_gap_minutes", data["quality_min_gap_minutes"]
             ),
         }
     )

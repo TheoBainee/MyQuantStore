@@ -45,6 +45,11 @@ stale_lag_days_1min = 3
 stale_lag_days_1day = 5
 cross_resolution_lag_days = 7
 
+[quality]
+intraday_begin = "07:00"
+intraday_end = "15:00"
+min_gap_minutes = 5
+
 [yahoo]
 requests_per_minute = 12
 overlap_buffer_days = 5
