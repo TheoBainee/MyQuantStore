@@ -959,7 +959,7 @@ chart/
    └─ apache-arrow.min.js   # Parser Arrow IPC self-contained (~205KB, esm.sh ?bundle)
 ```
 
-Le serveur est lancé via `uvicorn` (bloquant). Un seul serveur sert tous les products configurés dans `config.toml`. Les `RolloverChain` sont construites une fois au démarrage (une par product). Au boot CLI, cascade `ensure_aggregate(..., resolution=1day)` pour les miniatures si 1day manquant.
+Le serveur est lancé via `uvicorn` (bloquant). Un seul serveur sert tous les products configurés dans `config.toml`. Les `RolloverChain` sont construites au démarrage (une par product) puis **rechargées à chaud** : à chaque requête qui en a besoin (`/api/candles`, `/api/meta`), le chart compare le `mtime` du cache contrats (`contracts_cache_path`) à celui du dernier chargement et reconstruit la chaîne s'il a changé (typiquement après `schedule run caches`). Cache illisible (écriture en cours) → chaîne précédente conservée + warning, nouvel essai à la requête suivante. Un changement de code ou de config (`days_before_expiry`) demande toujours un redémarrage. Au boot CLI, cascade `ensure_aggregate(..., resolution=1day)` pour les miniatures si 1day manquant.
 
 ### 12bis.2 Endpoints API
 

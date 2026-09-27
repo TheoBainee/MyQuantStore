@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
@@ -574,3 +575,63 @@ class TestOverlayApi:
         client = TestClient(app)
         resp = client.get("/api/overlay/missing")
         assert resp.status_code == 404
+
+
+def _write_contracts(settings, contracts_df: pl.DataFrame, *, bump_ns: int = 0) -> Path:
+    """Écrit le cache contrats ES ; ``bump_ns`` force un mtime distinct."""
+    from myquantstore.storage.parquet_io import write_parquet
+
+    path = settings.contracts_cache_path("ES")
+    write_parquet(contracts_df, path, product_code="ES")
+    if bump_ns:
+        st = path.stat()
+        os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + bump_ns))
+    return path
+
+
+class TestChainHotReload:
+    """La chaîne futures est rechargée quand le cache contrats change (schedule caches)."""
+
+    def test_chain_reloaded_when_contracts_cache_changes(self, chart_setup, sample_contracts_df):
+        settings, instruments, chains, defaults = chart_setup
+        _write_contracts(settings, sample_contracts_df)
+        client = TestClient(create_chart_app(settings, instruments, chains, defaults))
+        assert client.get("/api/meta?product=futures:ES").json()["tick_size"] == 0.25
+
+        # schedule caches réécrit le cache (ici : tick size modifiée) → pas de restart
+        _write_contracts(
+            settings,
+            sample_contracts_df.with_columns(pl.lit(0.5).alias("trade_tick_size")),
+            bump_ns=1_000_000_000,
+        )
+        assert client.get("/api/meta?product=futures:ES").json()["tick_size"] == 0.5
+
+    def test_chain_kept_without_contracts_cache(self, chart_setup):
+        """Pas de cache contrats sur disque → la chaîne fournie au démarrage est conservée."""
+        settings, instruments, chains, defaults = chart_setup
+        assert not settings.contracts_cache_path("ES").exists()
+        client = TestClient(create_chart_app(settings, instruments, chains, defaults))
+        assert client.get("/api/meta?product=futures:ES").json()["tick_size"] == 0.25
+
+    def test_unreadable_cache_keeps_previous_chain_then_retries(
+        self, chart_setup, sample_contracts_df
+    ):
+        settings, instruments, chains, defaults = chart_setup
+        path = _write_contracts(settings, sample_contracts_df)
+        client = TestClient(create_chart_app(settings, instruments, chains, defaults))
+
+        # Parquet en cours d'écriture / corrompu → ancienne chaîne, pas de 500
+        path.write_bytes(b"not a parquet")
+        st = path.stat()
+        os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+        resp = client.get("/api/meta?product=futures:ES")
+        assert resp.status_code == 200
+        assert resp.json()["tick_size"] == 0.25
+
+        # Écriture terminée → rechargement à la requête suivante
+        _write_contracts(
+            settings,
+            sample_contracts_df.with_columns(pl.lit(0.5).alias("trade_tick_size")),
+            bump_ns=2_000_000_000,
+        )
+        assert client.get("/api/meta?product=futures:ES").json()["tick_size"] == 0.5

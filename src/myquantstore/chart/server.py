@@ -94,6 +94,44 @@ def create_chart_app(
     def _known_product(key: str) -> bool:
         return key in instruments or (enable_portfolio and is_portfolio_product(key))
 
+    # Rechargement à chaud des chaînes futures : la chaîne dérive du cache contrats
+    # sur disque (réécrit par ``schedule run caches``). On la reconstruit quand le
+    # mtime du Parquet change — pas de redémarrage du chart nécessaire.
+    chains = dict(chains)
+    chain_mtimes: dict[str, int | None] = {
+        key: _contracts_mtime(inst, settings)
+        for key, inst in instruments.items()
+        if inst.type == InstrumentType.FUTURES
+    }
+
+    def _chain_for(product: str) -> InstrumentChain | None:
+        chain = chains.get(product)
+        instrument = instruments.get(product)
+        if instrument is None or instrument.type != InstrumentType.FUTURES:
+            return chain
+        mtime = _contracts_mtime(instrument, settings)
+        if mtime is None or mtime == chain_mtimes.get(product):
+            return chain
+        try:
+            from myquantstore.chains import build_chain
+            from myquantstore.storage.parquet_io import read_parquet
+
+            contracts_df = read_parquet(settings.contracts_cache_path(instrument.symbol))
+            new_chain = build_chain(
+                instrument,
+                contracts_df=contracts_df,
+                days_before_expiry=settings.days_before_expiry,
+            )
+        except Exception as exc:
+            # Parquet en cours d'écriture / illisible : on garde l'ancienne chaîne,
+            # nouvel essai à la prochaine requête (mtime non mémorisé).
+            logger.warning(f"Rechargement chaîne {product} échoué, chaîne précédente conservée: {exc}")
+            return chain
+        chains[product] = new_chain
+        chain_mtimes[product] = mtime
+        logger.info(f"Chaîne {product} rechargée (cache contrats modifié)")
+        return new_chain
+
     def _parse_before(before: str | None) -> datetime | None:
         if not before:
             return None
@@ -203,7 +241,7 @@ def create_chart_app(
             )
         else:
             instrument = instruments[product]
-            chain = chains.get(product)
+            chain = _chain_for(product)
             resampled = (resolution == "1day" and k_days > 1) or (
                 resolution != "1day" and k_minutes > 1
             )
@@ -265,7 +303,7 @@ def create_chart_app(
                 raise HTTPException(status_code=500, detail=str(exc)) from exc
 
         instrument = instruments[product]
-        chain = chains.get(product)
+        chain = _chain_for(product)
 
         tick_size: float | None = None
         if chain is not None and instrument.type == InstrumentType.FUTURES:
@@ -419,6 +457,14 @@ class ChartDefaults:
         self.order_sell = order_sell
         # Affichage frontend ; doit coller à resolve_timezone (passé par le CLI).
         self.timezone = timezone or "UTC"
+
+
+def _contracts_mtime(instrument: Instrument, settings: Settings) -> int | None:
+    """``mtime_ns`` du cache contrats d'un futures, ou None s'il est absent."""
+    try:
+        return settings.contracts_cache_path(instrument.symbol).stat().st_mtime_ns
+    except OSError:
+        return None
 
 
 def _timescale_to_params(unit: str, nb: int) -> tuple[str, int, int]:

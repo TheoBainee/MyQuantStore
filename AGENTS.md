@@ -125,7 +125,7 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
 - **`myquantstore schedule`** (backends `systemd` user timer + `cron`) :
   - Deux jobs indépendants (`schedule <verbe> [fetch|caches]`, sans job = **fetch**) :
     - **fetch** : `schedule run` = **fetch → aggregate → status --check** (aggregate pour régénérer le cache parquet consommé en externe). Défaut samedi 07:00 (`OnCalendar=Sat *-*-* 07:00:00` / cron `0 7 * * 6`). Units `myquantstore-fetch.*` ; cron `# BEGIN MYQUANTSTORE`.
-    - **caches** : `schedule run caches` = **tickers refresh --markets all --force** puis **futures contracts --refresh**. Défaut samedi 03:00 (`OnCalendar=Sat *-*-* 03:00:00` / cron `0 3 * * 6`). Units `myquantstore-caches.*` ; cron `# BEGIN MYQUANTSTORE-CACHES`.
+    - **caches** : `schedule run caches` = **tickers refresh --markets all --force** puis **futures contracts --refresh**. Défaut samedi 03:00 (`OnCalendar=Sat *-*-* 03:00:00` / cron `0 3 * * 6`). Units `myquantstore-caches.*` ; cron `# BEGIN MYQUANTSTORE-CACHES`. Le `chart` en cours d'exécution recharge ses `RolloverChain` quand le `mtime` du cache contrats change (pas de restart) ; `serve` reconstruit déjà la chaîne à chaque requête. Code / config (`days_before_expiry`) = restart.
   - `install|uninstall|status|show` ; `--backend auto|systemd|cron` ; `--fetch-args` (job fetch only).
   - `status` affiche les deux jobs ; `uninstall` sans job = les deux.
   - Templates manuels : `contrib/systemd/`, `contrib/cron/`.

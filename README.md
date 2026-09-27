@@ -147,6 +147,8 @@ Deux jobs indépendants (`schedule <verbe> [fetch|caches]`, sans job = **fetch**
 1. **`tickers refresh --markets all --force`**
 2. **`futures contracts --refresh`**
 
+Un `myquantstore chart` déjà lancé prend en compte les nouveaux contrats sans redémarrage : la chaîne de rollover est reconstruite dès que le cache contrats change sur disque (un changement de code ou de `days_before_expiry` demande toujours un restart).
+
 ```bash
 myquantstore schedule install                    # fetch, auto: systemd user si dispo, sinon cron
 myquantstore schedule install caches             # caches Massive (sam. 03:00)
