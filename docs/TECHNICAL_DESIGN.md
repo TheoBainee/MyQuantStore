@@ -153,8 +153,9 @@ log_dir = "~/.local/share/myquantstore/logs"
 raw_dumps_subdir = "raw"
 aggregate_subdir = "aggregate"
 
-[tests]
-data_quality_trigger = 0.1
+[quality]
+data_quality_trigger = 0.1   # ex-[tests] (encore lu, warning de dépréciation)
+min_gap_minutes = 5          # doctor gaps
 
 [logging]
 level = "DEBUG"
@@ -191,7 +192,7 @@ un instrument configuré, `history_months.<type> >= 1`, `requests_per_minute >= 
 `max_retries >= 1`, `page_limit` / `contracts_page_limit` / splits-dividends dans les
 bornes API, `data_quality_trigger > 0`, `display_max_rows/columns >= 1`,
 `default_timescale_unit` ∈ {`min`, `hour`, `day`, `week`}, paramètres chart `>= 1`,
-`[quality]` : `intraday_begin` / `intraday_end` au format `HH:MM`, `min_gap_minutes >= 1`.
+`[quality] min_gap_minutes >= 1`.
 
 > **Note** : `normalize_tick_size` n'est pas un paramètre de configuration — c'est un
 > **flag de la commande `query`** (`--normalize-tick-size`). Voir aussi `docs/MULTI_TYPE.md`.
@@ -535,7 +536,7 @@ Le test de qualité n'est **pas** déclenché automatiquement lors de `--normali
 si ABS((p / t) - round(p / t)) > data_quality_trigger * t  ->  donnée non conforme
 ```
 
-- `data_quality_trigger` (config `[tests]`, défaut `0.1`) = tolérance relative au tick size.
+- `data_quality_trigger` (config `[quality]`, ex-`[tests]`, défaut `0.1`) = tolérance relative au tick size.
 - Avec `0.1` : on accepte une déviation jusqu'à 10% d'un tick. Au-delà, la donnée est considérée non conforme.
 
 **Flag CLI** : `myquantstore query <product> --check-ticksize-accuracy`
@@ -600,7 +601,8 @@ def check_ticksize_accuracy(
 Lecture seule de l'agrégé 1min : aucune donnée n'est modifiée ni fabriquée.
 
 - **Plage** `[intraday_begin, intraday_end)` en heures murales du fuseau `resolve_timezone`
-  (override `--timezone`). Priorité : flags CLI > `[quality]` > défaut (07:00-15:00).
+  (override `--timezone`). Priorité : flags CLI > `[chart] intraday_begin` / `intraday_end`
+  (erreur explicite si aucune plage) ; seuil : `--min-gap-minutes` > `[quality] min_gap_minutes`.
   Wrap-around (`begin > end`, ex: 17:00-04:00) : la session porte la date du soir.
 - **Sessions** : seules celles contenant au moins une barre sont auditées. Trou interne =
   écart ≥ `min_gap_minutes` + 1 min entre deux barres consécutives ; trous de bord = première
@@ -1200,7 +1202,7 @@ tickers d'agrégat, le contrat courant et sa maturité (cache local). Réponse d
 | `test_rollover.py` | Expiration vendredi 19 → dernier jour conservé vendredi 12 ; lundi suivant = nouveau contrat ; `continuous_segments` correct ; `tick_size_for_ticker` ; `to_table()` |
 | `test_stocks_fetch.py` / `test_v2_single_fetch.py` / `test_yahoo_api.py` | Fetchers multi-type + Yahoo daily (ranges, skip jour, reverse split) |
 | `test_reader.py` | `adjust_rollover=False` retourne chaîne ; `True` applique back-adjust futures / dividends stocks ; filtres `start`/`end` ; `normalize_tick_size` Int32 ; `check_ticksize_accuracy` bilan ; incompatibilité `normalize_tick_size` × `adjust_rollover` ; resampling / intraday |
-| `test_gaps.py` | Trou interne confirmé / non confirmé ; seuil ; hors plage ; bords début/fin ; bords 1re/dernière session ignorés ; wrap-around 17:00-04:00 ; sessions vides ; filtres start/end ; config `[quality]` ; CLI `doctor gaps` (exit 1, override flags, fallback config, erreur de format) |
+| `test_gaps.py` | Trou interne confirmé / non confirmé ; seuil ; hors plage ; bords début/fin ; bords 1re/dernière session ignorés ; wrap-around 17:00-04:00 ; sessions vides ; filtres start/end ; config `[quality]` ; CLI `doctor gaps` (exit 1, override flags, fallback plage `[chart]`, plage absente, erreur de format) |
 | `test_resampler.py` | Cohérence du bucketing (anchor par session) ; drop des partiels de fin ; gaps conservés (`candle_count < k`) ; agrégation OHLCV (open=first, high=max, low=min, close=last) ; k=1 noop ; k invalide (`< 1`) ; intraday normal (`begin < end`) ; intraday wrap-around (`begin > end`) ; `begin == end` lève `ValueError` ; cohérence intraday+resample ; drop partial avec intraday |
 | `test_chart_server.py` | Dashboard `/` multi-type ; page HTML + bouton maison ; static JS ; `/api/candles` Arrow IPC ; `before` ; timescale 7min ; unit invalide → 400 ; `forward_fill` opt-in ; `/api/meta` ; `/api/thumbnail` SVG ; product inconnu → 404 ; sparklines unit |
 | `test_serve.py` | `/v1/health` 200/503 ; `/v1/instruments` ; `/v1/query` Parquet/Arrow 200/400/404 ; dédup roll défaut / `dedup_timestamps=false` ; `forward_fill=true` ; CLI `--host`/`--port` |

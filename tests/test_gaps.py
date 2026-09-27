@@ -164,20 +164,24 @@ class TestFindGaps:
 
 class TestQualityConfig:
     def test_defaults(self, tmp_settings):
-        assert tmp_settings.quality_intraday_begin == time(7)
-        assert tmp_settings.quality_intraday_end == time(15)
         assert tmp_settings.quality_min_gap_minutes == 5
+        assert tmp_settings.data_quality_trigger == 0.1
 
     def test_load_from_toml(self, tmp_path: Path):
         cfg = tmp_path / "config.toml"
         cfg.write_text(
-            '[quality]\nintraday_begin = "08:30"\nintraday_end = "15:15"\nmin_gap_minutes = 10\n',
+            "[quality]\ndata_quality_trigger = 0.2\nmin_gap_minutes = 10\n",
             encoding="utf-8",
         )
         s = load_settings(cfg)
-        assert s.quality_intraday_begin == time(8, 30)
-        assert s.quality_intraday_end == time(15, 15)
+        assert s.data_quality_trigger == 0.2
         assert s.quality_min_gap_minutes == 10
+
+    def test_min_gap_minutes_ge_1(self, tmp_path: Path):
+        cfg = tmp_path / "config.toml"
+        cfg.write_text("[quality]\nmin_gap_minutes = 0\n", encoding="utf-8")
+        with pytest.raises(Exception, match="min_gap_minutes"):
+            load_settings(cfg)
 
 
 def _seed(settings, symbol: str, ts: list[datetime]) -> None:
@@ -209,6 +213,9 @@ class TestDoctorGapsCli:
             "NQ",
             _bars(DAYS, time(4), time(16), holes={HOLE_DAY: [(time(12), time(14))]}),
         )
+        # Plage auditée = [chart] intraday_begin / intraday_end
+        tmp_settings.chart_intraday_begin = time(7)
+        tmp_settings.chart_intraday_end = time(15)
         monkeypatch.setattr("myquantstore.cli.load_settings", lambda *a, **k: tmp_settings)
         return tmp_settings
 
@@ -240,12 +247,19 @@ class TestDoctorGapsCli:
         assert "0 trou(s) confirmé(s)" in capsys.readouterr().out
 
     def test_config_fallback(self, seeded, capsys):
-        """Sans flag : [quality] (ici 13:00-15:00, seuil 90 min → trou de 60 min ignoré)."""
-        seeded.quality_intraday_begin = time(13)
+        """Sans flag : plage [chart] (13:00-15:00) + seuil [quality] (90 min → trou de 60 min ignoré)."""
+        seeded.chart_intraday_begin = time(13)
         seeded.quality_min_gap_minutes = 90
         rc = main(["doctor", "gaps", "--timezone", TZ])
         assert rc == 0
         assert "plage 13:00–15:00 · seuil 90 min" in capsys.readouterr().out
+
+    def test_missing_window_error(self, seeded, capsys):
+        """Ni flags ni [chart] intraday_begin/end → erreur explicite."""
+        seeded.chart_intraday_begin = None
+        seeded.chart_intraday_end = None
+        assert main(["doctor", "gaps", "--timezone", TZ]) == 1
+        assert "plage horaire requise" in capsys.readouterr().out
 
     def test_invalid_time_flag(self, seeded, capsys):
         assert main(["doctor", "gaps", "--intraday-begin", "7h"]) == 1

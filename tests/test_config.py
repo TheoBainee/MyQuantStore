@@ -64,7 +64,7 @@ history_months = 24
 port = 9001
 host = "0.0.0.0"
 
-[tests]
+[quality]
 data_quality_trigger = 0.1
 
 [logging]
@@ -352,6 +352,22 @@ indices = 60
     def test_validation_contracts_page_limit_range(self):
         with pytest.raises(Exception, match="contracts_page_limit"):
             Settings(api_key="test", contracts_page_limit=0)
+
+    def test_legacy_tests_section_fallback(self, tmp_path: Path, caplog: pytest.LogCaptureFixture):
+        """[tests] déprécié : data_quality_trigger encore lu, avec warning ; [quality] prime."""
+        import logging
+
+        cfg = tmp_path / "config.toml"
+        cfg.write_text("[tests]\ndata_quality_trigger = 0.3\n", encoding="utf-8")
+        with caplog.at_level(logging.WARNING, logger="myquantstore.config"):
+            assert load_settings(cfg).data_quality_trigger == 0.3
+        assert "[tests] dépréciée" in caplog.text
+
+        cfg.write_text(
+            "[tests]\ndata_quality_trigger = 0.3\n[quality]\ndata_quality_trigger = 0.2\n",
+            encoding="utf-8",
+        )
+        assert load_settings(cfg).data_quality_trigger == 0.2
 
     def test_validation_data_quality_trigger_positive(self):
         with pytest.raises(Exception, match="data_quality_trigger"):

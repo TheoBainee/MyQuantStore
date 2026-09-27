@@ -291,9 +291,10 @@ myquantstore query NQ --intraday-begin 09:30 --intraday-end 16:00
 ### Audit des trous de données (`myquantstore doctor gaps`)
 
 Signale les minutes sans chandelier dans une plage horaire intraday, sur l'agrégé 1min
-(lecture seule). La plage et le seuil viennent des flags, sinon de `[quality]`
-(`intraday_begin`, `intraday_end`, `min_gap_minutes` — défaut 07:00-15:00, 5 min),
-dans le fuseau `[chart] timezone`. Auditer une plage liquide limite les faux positifs.
+(lecture seule). La plage vient de `--intraday-begin` / `--intraday-end`, sinon de
+`[chart] intraday_begin` / `intraday_end` (la même que le chart), dans le fuseau
+`[chart] timezone` ; le seuil vient de `--min-gap-minutes`, sinon de `[quality]
+min_gap_minutes` (défaut 5 min). Auditer une plage liquide limite les faux positifs.
 
 Chaque trou est comparé aux autres instruments du même type : **CONFIRMÉ** si l'un d'eux
 a des données pendant ce créneau (panne de flux sur ce produit), **non confirmé** sinon
@@ -301,7 +302,7 @@ a des données pendant ce créneau (panne de flux sur ce produit), **non confirm
 s'il reste un trou confirmé — utilisable comme garde-fou après un `fetch`.
 
 ```bash
-myquantstore doctor gaps                                   # [quality] ou 07:00-15:00
+myquantstore doctor gaps                                   # plage [chart] intraday_begin/end
 myquantstore doctor gaps --type futures --start 2026-09-01 --confirmed-only
 myquantstore doctor gaps -i NQ --intraday-begin 17:00 --intraday-end 04:00 --min-gap-minutes 30
 ```

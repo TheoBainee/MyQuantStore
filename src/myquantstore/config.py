@@ -190,11 +190,11 @@ class Settings(BaseSettings):
     # Warn si |lag_1min - lag_1day| > seuil (dual-source).
     health_cross_resolution_lag_days: int = 7
 
-    # --- Qualité / audit des trous 1min (config.toml: [quality]) — doctor gaps ---
-    # Plage horaire auditée (HH:MM, heures murales du fuseau résolu). CLI override.
-    quality_intraday_begin: time = time(7, 0)
-    quality_intraday_end: time = time(15, 0)
-    # Durée manquante minimale (minutes) pour signaler un trou.
+    # --- Qualité des données (config.toml: [quality]) ---
+    # Tolérance du test tick size (query --check-ticksize-accuracy), relative au tick.
+    data_quality_trigger: float = 0.1
+    # doctor gaps : durée manquante minimale (minutes) pour signaler un trou.
+    # La plage auditée est celle de [chart] intraday_begin / intraday_end.
     quality_min_gap_minutes: int = 5
 
     # --- Futures (config.toml: [futures]) — spécifique au type futures ---
@@ -209,9 +209,6 @@ class Settings(BaseSettings):
 
     # --- Tickers reference (config.toml: [tickers]) ---
     tickers_page_limit: int = 1000  # max API = 1000 pour /v3/reference/tickers
-
-    # --- Tests (config.toml: [tests]) ---
-    data_quality_trigger: float = 0.1
 
     # --- Logging (config.toml: [logging]) ---
     log_level: str = "DEBUG"
@@ -334,16 +331,6 @@ class Settings(BaseSettings):
         if v < 0:
             raise ValueError("seuils health lag doivent être >= 0")
         return v
-
-    @field_validator("quality_intraday_begin", "quality_intraday_end", mode="before")
-    @classmethod
-    def _quality_intraday_time(cls, v: Any, info: ValidationInfo) -> time:
-        if isinstance(v, time):
-            return v
-        try:
-            return time.fromisoformat(str(v).strip())
-        except ValueError as exc:
-            raise ValueError(f"{info.field_name} doit être HH:MM (reçu: {v!r})") from exc
 
     @field_validator("quality_min_gap_minutes")
     @classmethod
@@ -889,8 +876,6 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
             "aggregate_subdir": storage.get("aggregate_subdir", data["aggregate_subdir"]),
             "cache_dir": _expand_path_str(storage.get("cache_dir", data["cache_dir"])),
             "log_dir": _expand_path_str(storage.get("log_dir", data["log_dir"])),
-            # [tests]
-            "data_quality_trigger": tests.get("data_quality_trigger", data["data_quality_trigger"]),
             # [logging]
             "log_level": logging_section.get("level", data["log_level"]),
             # [display]
@@ -995,11 +980,11 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
             "health_cross_resolution_lag_days": health_cfg.get(
                 "cross_resolution_lag_days", data["health_cross_resolution_lag_days"]
             ),
-            # [quality] — audit des trous 1min (doctor gaps)
-            "quality_intraday_begin": quality_cfg.get(
-                "intraday_begin", data["quality_intraday_begin"]
+            # [quality] (+ rétrocompat [tests].data_quality_trigger)
+            "data_quality_trigger": quality_cfg.get(
+                "data_quality_trigger",
+                tests.get("data_quality_trigger", data["data_quality_trigger"]),
             ),
-            "quality_intraday_end": quality_cfg.get("intraday_end", data["quality_intraday_end"]),
             "quality_min_gap_minutes": quality_cfg.get(
                 "min_gap_minutes", data["quality_min_gap_minutes"]
             ),
@@ -1008,6 +993,14 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
 
     # Reconstruire avec validation complète (re-run des field_validators)
     settings = Settings(**data)
+
+    # [tests] déprécié : fusionné dans [quality]
+    if tests:
+        import logging
+
+        logging.getLogger("myquantstore.config").warning(
+            "Section [tests] dépréciée — déplacez data_quality_trigger dans [quality]."
+        )
 
     # [fetch] timeframe déprécié : barre Massive toujours 1min
     raw_tf = str(fetch.get("timeframe", "1min")).strip().lower()

@@ -46,8 +46,7 @@ stale_lag_days_1day = 5
 cross_resolution_lag_days = 7
 
 [quality]
-intraday_begin = "07:00"
-intraday_end = "15:00"
+data_quality_trigger = 0.1
 min_gap_minutes = 5
 
 [yahoo]
@@ -60,9 +59,6 @@ raw_dumps_subdir = "raw"
 aggregate_subdir = "aggregate"
 cache_dir = "~/.local/share/myquantstore/cache"
 log_dir = "~/.local/share/myquantstore/logs"
-
-[tests]
-data_quality_trigger = 0.1
 
 [logging]
 level = "DEBUG"

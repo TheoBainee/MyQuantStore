@@ -76,12 +76,13 @@ stale_lag_days_1day = 5
 cross_resolution_lag_days = 7
 
 [quality]
-# Audit des trous de données 1min : `myquantstore doctor gaps`.
-# Plage horaire auditée (HH:MM, fuseau [chart] timezone). Les plages peu liquides
-# (ex: 17:00-04:00) génèrent plus de faux positifs. Wrap-around accepté (begin > end).
-intraday_begin = "07:00"
-intraday_end = "15:00"
-# Durée manquante minimale (minutes) pour signaler un trou.
+# Tolérance pour le test de qualité tick_size (commande query --check-ticksize-accuracy).
+# Si ABS((prix / tick) - round(prix / tick)) > data_quality_trigger * tick -> donnée non conforme.
+# 0.1 = on accepte une déviation jusqu'à 10% d'un tick.
+data_quality_trigger = 0.1
+# Audit des trous de données 1min (`myquantstore doctor gaps`) : durée manquante
+# minimale (minutes) pour signaler un trou. La plage auditée est celle de
+# [chart] intraday_begin / intraday_end (fuseau [chart] timezone).
 min_gap_minutes = 5
 
 [yahoo]
@@ -102,12 +103,6 @@ aggregate_subdir = "aggregate"
 cache_dir = "~/.local/share/myquantstore/cache"
 # Répertoire des fichiers de log
 log_dir = "~/.local/share/myquantstore/logs"
-
-[tests]
-# Tolérance pour le test de qualité tick_size (commande query --check-ticksize-accuracy).
-# Si ABS((prix / tick) - round(prix / tick)) > data_quality_trigger * tick -> donnée non conforme.
-# 0.1 = on accepte une déviation jusqu'à 10% d'un tick.
-data_quality_trigger = 0.1
 
 [logging]
 # Niveau de logging. DEBUG active TOUT : appels API, skips cache, extrait pagination.

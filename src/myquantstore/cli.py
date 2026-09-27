@@ -446,7 +446,7 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
         epilog=(
             "Exemples:\n"
-            "  myquantstore doctor gaps\n"
+            "  myquantstore doctor gaps                  # plage [chart] intraday_begin/end\n"
             "  myquantstore doctor gaps --type futures --start 2026-09-01\n"
             "  myquantstore doctor gaps -i NQ --intraday-begin 08:30 --intraday-end 15:00\n"
             "  myquantstore doctor gaps --intraday-begin 17:00 --intraday-end 04:00 "
@@ -459,13 +459,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "--intraday-begin",
         default=None,
         metavar="HH:MM",
-        help="Début de plage auditée (défaut: [quality] intraday_begin ; wrap-around OK)",
+        help="Début de plage auditée (défaut: [chart] intraday_begin ; wrap-around OK)",
     )
     p_doctor_gaps.add_argument(
         "--intraday-end",
         default=None,
         metavar="HH:MM",
-        help="Fin de plage auditée, exclusive (défaut: [quality] intraday_end)",
+        help="Fin de plage auditée, exclusive (défaut: [chart] intraday_end)",
     )
     p_doctor_gaps.add_argument(
         "--timezone",
@@ -1858,7 +1858,7 @@ def _cmd_doctor_overlays(args: argparse.Namespace) -> int:
 
 
 def _cmd_doctor_gaps(args: argparse.Namespace) -> int:
-    """``doctor gaps`` : trous 1min dans une plage intraday (CLI > [quality] > défaut)."""
+    """``doctor gaps`` : trous 1min dans une plage intraday (CLI > [chart] intraday_begin/end)."""
     from datetime import date, time
     from zoneinfo import ZoneInfo
 
@@ -1880,12 +1880,12 @@ def _cmd_doctor_gaps(args: argparse.Namespace) -> int:
         begin = (
             time.fromisoformat(args.intraday_begin)
             if args.intraday_begin
-            else settings.quality_intraday_begin
+            else settings.chart_intraday_begin
         )
         end = (
             time.fromisoformat(args.intraday_end)
             if args.intraday_end
-            else settings.quality_intraday_end
+            else settings.chart_intraday_end
         )
         start = date.fromisoformat(args.start) if args.start else None
         stop = date.fromisoformat(args.end) if args.end else None
@@ -1900,6 +1900,12 @@ def _cmd_doctor_gaps(args: argparse.Namespace) -> int:
     )
     if min_gap < 1:
         console.print("[red]Erreur:[/red] --min-gap-minutes doit être >= 1")
+        return 1
+    if begin is None or end is None:
+        console.print(
+            "[red]Erreur:[/red] plage horaire requise : --intraday-begin / --intraday-end, "
+            "ou [chart] intraday_begin / intraday_end dans config.toml"
+        )
         return 1
     if begin == end:
         console.print("[red]Erreur:[/red] --intraday-begin et --intraday-end doivent différer")
