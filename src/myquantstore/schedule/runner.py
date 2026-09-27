@@ -49,7 +49,8 @@ def run_cache_refresh_job(
     *,
     main_fn: Callable[[list[str] | None], int] | None = None,
 ) -> int:
-    """Enchaîne tickers refresh --markets all --force puis futures contracts --refresh."""
+    """Enchaîne tickers refresh --markets all --force, futures contracts --refresh
+    puis calendar refresh (exit ≠ 0 dès qu'une étape échoue)."""
     invoke = main_fn if main_fn is not None else _cli_main()
 
     rc_tickers = int(invoke(["tickers", "refresh", "--markets", "all", "--force"]))
@@ -59,6 +60,10 @@ def run_cache_refresh_job(
     rc_contracts = int(invoke(["futures", "contracts", "--refresh"]))
     if rc_contracts != 0:
         return rc_contracts
+
+    rc_calendar = int(invoke(["calendar", "refresh"]))
+    if rc_calendar != 0:
+        return rc_calendar
 
     return 0
 

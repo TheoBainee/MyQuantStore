@@ -36,8 +36,9 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from rich.console import Console
 from rich.table import Table
@@ -223,6 +224,15 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_tickers_types(settings, args)
         if getattr(args, "tickers_command", None) == "values":
             return _cmd_tickers_values(settings, args)
+        parser.print_help()
+        return 0
+    elif args.command == "calendar":
+        if getattr(args, "calendar_command", None) == "refresh":
+            return _cmd_calendar_refresh(settings, args)
+        if getattr(args, "calendar_command", None) == "holidays":
+            return _cmd_calendar_holidays(settings, args)
+        if getattr(args, "calendar_command", None) == "status":
+            return _cmd_calendar_status(settings, args)
         parser.print_help()
         return 0
     elif args.command == "search":
@@ -442,7 +452,9 @@ def _build_parser() -> argparse.ArgumentParser:
             "dans la plage [--intraday-begin, --intraday-end) au-delà de --min-gap-minutes.\n"
             "Un trou est CONFIRMÉ si un autre instrument du même type a des barres pendant\n"
             "ce créneau (panne de flux) ; non confirmé sinon (férié, clôture anticipée).\n"
-            "Lecture seule. Exit 1 si au moins un trou confirmé."
+            "Un trou hors séance prévue par le calendrier de marché (calendar refresh :\n"
+            "férié, arrêt, clôture anticipée) est attendu et jamais compté.\n"
+            "Lecture seule. Exit 1 si au moins un trou confirmé non attendu."
         ),
         epilog=(
             "Exemples:\n"
@@ -497,6 +509,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="N'affiche que les trous confirmés par un autre instrument",
     )
+    p_doctor_gaps.add_argument(
+        "--no-calendar",
+        action="store_true",
+        help="Ignore le calendrier de marché (fériés et clôtures anticipées non expliqués)",
+    )
 
     # --- setup-key ---
     p_setup = _sub(
@@ -542,7 +559,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "          Défaut: samedi 07:00  (units: myquantstore-fetch.*)\n"
             "\n"
             "  caches  Refresh caches Massive — tickers refresh --markets all --force\n"
-            "          + futures contracts --refresh\n"
+            "          + futures contracts --refresh + calendar refresh\n"
             "          Défaut: samedi 03:00  (units: myquantstore-caches.*)\n"
             "\n"
             "Sans job : fetch (compat). status affiche les deux."
@@ -1315,6 +1332,112 @@ def _build_parser() -> argparse.ArgumentParser:
         help="N'auto-refresh pas le cache tickers si absent/périmé",
     )
 
+    # --- calendar (calendriers de marché Massive historisés) ---
+    p_calendar = _sub(
+        "calendar",
+        help="Calendriers de marché Massive historisés (fériés, séances futures)",
+        description=(
+            "Historise les calendriers de marché Massive (données, pas un cache :\n"
+            "les fériés passés disparaissent de l'API) :\n"
+            "  futures                 /futures/v1/schedules : séances par produit\n"
+            "  stocks, forex, indices  /v1/marketstatus/upcoming : fériés NYSE/NASDAQ à venir\n"
+            "Stockage : data/raw/calendar (dumps immuables) + data/aggregate/calendar.\n"
+            "Utilisé par doctor gaps pour expliquer fériés et clôtures anticipées."
+        ),
+        epilog=(
+            "Exemples:\n"
+            "  myquantstore calendar refresh\n"
+            "  myquantstore calendar refresh --type futures --dry-run\n"
+            "  myquantstore calendar holidays -i ES --start 2026-01-01\n"
+            "  myquantstore calendar holidays --type stocks --exchange NYSE\n"
+            "  myquantstore calendar status"
+        ),
+    )
+    calendar_sub = p_calendar.add_subparsers(dest="calendar_command", help="Sous-commande calendar")
+    p_cal_refresh = calendar_sub.add_parser(
+        "refresh",
+        help="Fetch et historise les calendriers (dump immuable + fusion)",
+        description=(
+            "Une requête /futures/v1/schedules par produit futures (1er run : depuis\n"
+            "today - history_months.futures ; ensuite : depuis le dernier run\n"
+            "- overlap_buffer_days) et un seul snapshot /v1/marketstatus/upcoming\n"
+            "pour stocks, forex et indices.\n"
+            "Une source en erreur n'arrête pas les autres ; exit 1 si au moins une échoue."
+        ),
+        formatter_class=_HELP_FMT,
+        epilog="Exemple: myquantstore calendar refresh --type futures --dry-run",
+    )
+    _add_instrument_filter(
+        p_cal_refresh,
+        instrument_help=(
+            "Instrument (futures : son produit ; stocks/forex/indices : les fériés). "
+            "Défaut: tous"
+        ),
+        type_help=(
+            "Type à couvrir (futures, stocks, forex, indices). Défaut: tous les types configurés"
+        ),
+    )
+    p_cal_refresh.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Affiche les requêtes prévues (plages) sans appeler l'API",
+    )
+    p_cal_holidays = calendar_sub.add_parser(
+        "holidays",
+        help="Fériés, clôtures anticipées et séances interrompues (lecture seule)",
+        description=(
+            "Lit les calendriers historisés, sans appel API :\n"
+            "  futures                 jours ouvrés sans séance, clôtures anticipées et\n"
+            "                          séances interrompues (nom repris des fériés actions)\n"
+            "  stocks, forex, indices  fermetures et clôtures anticipées NYSE / NASDAQ\n"
+            "Les marchés au calendrier identique un même jour partagent une ligne."
+        ),
+        formatter_class=_HELP_FMT,
+        epilog=(
+            "Exemples:\n"
+            "  myquantstore calendar holidays --start 2026-01-01 --end 2026-12-31\n"
+            "  myquantstore calendar holidays -i ES --timezone America/New_York"
+        ),
+    )
+    _add_instrument_filter(
+        p_cal_holidays,
+        instrument_help="Instrument dont afficher le calendrier. Défaut: tous",
+        type_help="Type à afficher (futures, stocks, forex, indices). Défaut: tous",
+    )
+    p_cal_holidays.add_argument(
+        "--start",
+        default=None,
+        metavar="DATE",
+        help="Première date affichée, incluse (YYYY-MM-DD). Défaut: tout l'historique",
+    )
+    p_cal_holidays.add_argument(
+        "--end",
+        default=None,
+        metavar="DATE",
+        help="Dernière date affichée, incluse (YYYY-MM-DD). Défaut: tout ce qui est publié",
+    )
+    p_cal_holidays.add_argument(
+        "--exchange",
+        default=None,
+        metavar="EXCHANGE",
+        help="Filtre les fériés actions sur une bourse (NYSE, NASDAQ)",
+    )
+    p_cal_holidays.add_argument(
+        "--timezone",
+        default=None,
+        metavar="IANA",
+        help="Fuseau d'affichage des séances (défaut: resolve_timezone = [chart] timezone)",
+    )
+    calendar_sub.add_parser(
+        "status",
+        help="Couverture des calendriers historisés (données, dumps, dernier refresh)",
+        description=(
+            "Par source : période couverte, fenêtres d'autorité des snapshots, nombre de\n"
+            "dumps, dernier refresh et fériés connus à venir. Lecture seule."
+        ),
+        formatter_class=_HELP_FMT,
+    )
+
     # --- portfolio (MPT) ---
     p_port = _sub(
         "portfolio",
@@ -1865,9 +1988,10 @@ def _cmd_doctor_gaps(args: argparse.Namespace) -> int:
     import polars as pl
 
     from myquantstore.instruments import RESOLUTION_1MIN
+    from myquantstore.market_calendar.views import load_calendar
     from myquantstore.query.timezone import resolve_timezone
     from myquantstore.storage.aggregate_cache import aggregate_exists, read_aggregate
-    from myquantstore.storage.gaps import confirm_gaps, find_gaps, unique_timestamps
+    from myquantstore.storage.gaps import confirm_gaps, explain_gaps, find_gaps, unique_timestamps
 
     try:
         settings = load_settings()
@@ -1932,6 +2056,7 @@ def _cmd_doctor_gaps(args: argparse.Namespace) -> int:
     peers_by_type: dict[InstrumentType, dict[str, pl.Series]] = {}
     total_confirmed = 0
     total_unconfirmed = 0
+    total_expected = 0
 
     for inst in targets:
         tz = resolve_timezone(settings, inst, override=args.timezone)
@@ -1953,19 +2078,37 @@ def _cmd_doctor_gaps(args: argparse.Namespace) -> int:
             end=stop,
         )
         confirm_gaps(report, peers)
-        confirmed = [g for g in report.gaps if g.confirmed_by]
-        unconfirmed = [g for g in report.gaps if not g.confirmed_by]
+        calendar = None if args.no_calendar else load_calendar(settings, inst)
+        if calendar is not None:
+            explain_gaps(
+                report,
+                calendar,
+                intraday_begin=begin,
+                intraday_end=end,
+                timezone=tz,
+                min_gap_minutes=min_gap,
+            )
+        expected = [g for g in report.gaps if g.calendar_note]
+        confirmed = [g for g in report.gaps if g.confirmed_by and not g.calendar_note]
+        unconfirmed = [g for g in report.gaps if not g.confirmed_by and not g.calendar_note]
         total_confirmed += len(confirmed)
         total_unconfirmed += len(unconfirmed)
+        total_expected += len(expected)
 
         console.print(
             f"\n[bold]{inst.key}[/bold] — {report.sessions_checked} session(s) auditée(s) ({tz}) : "
-            f"[red]{len(confirmed)} confirmé(s)[/red], {len(unconfirmed)} non confirmé(s)"
+            f"[red]{len(confirmed)} confirmé(s)[/red], {len(unconfirmed)} non confirmé(s), "
+            f"[green]{len(expected)} attendu(s)[/green] (calendrier)"
         )
         if len(peers) < 2:
             console.print(
                 f"  [dim]aucun autre instrument {inst.type.value} avec agrégé 1min : "
                 "confirmation impossible[/dim]"
+            )
+        if calendar is None and not args.no_calendar and inst.type in _CALENDAR_TYPES:
+            console.print(
+                "  [dim]calendrier de marché absent : `myquantstore calendar refresh` "
+                "pour expliquer fériés et clôtures anticipées[/dim]"
             )
         shown = confirmed if args.confirmed_only else report.gaps
         if shown:
@@ -1973,11 +2116,15 @@ def _cmd_doctor_gaps(args: argparse.Namespace) -> int:
             for col in ("Session", "Début", "Fin", "Durée", "Position", "Contrat", "Statut"):
                 table.add_column(col)
             for gap in shown:
-                status = (
-                    f"[red]CONFIRMÉ[/red] ({', '.join(k.split(':', 1)[-1] for k in gap.confirmed_by)})"
-                    if gap.confirmed_by
-                    else "[dim]non confirmé[/dim]"
-                )
+                if gap.calendar_note:
+                    status = f"[green]attendu[/green] ({gap.calendar_note})"
+                elif gap.confirmed_by:
+                    status = (
+                        f"[red]CONFIRMÉ[/red] "
+                        f"({', '.join(k.split(':', 1)[-1] for k in gap.confirmed_by)})"
+                    )
+                else:
+                    status = "[dim]non confirmé[/dim]"
                 table.add_row(
                     gap.session.isoformat(),
                     gap.start.astimezone(ZoneInfo(tz)).strftime("%H:%M"),
@@ -1988,19 +2135,48 @@ def _cmd_doctor_gaps(args: argparse.Namespace) -> int:
                     status,
                 )
             console.print(table)
-        if report.empty_sessions:
-            listed = ", ".join(d.isoformat() for d in report.empty_sessions[:10])
-            more = "…" if len(report.empty_sessions) > 10 else ""
+        if report.closed_sessions:
+            closed = [
+                f"{d.isoformat()} {label}" for d, label in sorted(report.closed_sessions.items())
+            ]
             console.print(
-                f"  [dim]{len(report.empty_sessions)} session(s) sans aucune barre "
-                f"(fériés probables) : {listed}{more}[/dim]"
+                f"  [dim]{len(closed)} session(s) fermée(s) selon le calendrier : "
+                f"{_short_list(closed)}[/dim]"
+            )
+        if report.expected_empty_sessions:
+            console.print(
+                f"  [yellow]⚠ {len(report.expected_empty_sessions)} session(s) sans aucune barre "
+                "alors que le calendrier prévoit une séance : "
+                f"{_short_list([d.isoformat() for d in report.expected_empty_sessions])}[/yellow]"
+            )
+        unknown = [
+            d
+            for d in report.empty_sessions
+            if d not in report.closed_sessions and d not in report.expected_empty_sessions
+        ]
+        if unknown:
+            scope = (
+                "hors calendrier, fériés probables" if calendar is not None else "fériés probables"
+            )
+            console.print(
+                f"  [dim]{len(unknown)} session(s) sans aucune barre "
+                f"({scope}) : {_short_list([d.isoformat() for d in unknown])}[/dim]"
             )
 
     console.print(
-        f"\n{total_confirmed} trou(s) confirmé(s), {total_unconfirmed} non confirmé(s) "
-        f"sur {len(targets)} instrument(s)."
+        f"\n{total_confirmed} trou(s) confirmé(s), {total_unconfirmed} non confirmé(s), "
+        f"{total_expected} attendu(s) (calendrier) sur {len(targets)} instrument(s)."
     )
     return 1 if total_confirmed else 0
+
+
+_CALENDAR_TYPES = (InstrumentType.FUTURES, InstrumentType.STOCKS, InstrumentType.INDICES)
+"""Types dont les trous peuvent être expliqués par un calendrier Massive historisé."""
+
+
+def _short_list(items: list[str], limit: int = 10) -> str:
+    """Les ``limit`` premiers éléments séparés par des virgules, ``…`` au-delà."""
+    return ", ".join(items[:limit]) + ("…" if len(items) > limit else "")
 
 
 def _cmd_doctor(args: argparse.Namespace) -> int:
@@ -2068,6 +2244,7 @@ def _cmd_schedule(settings: Settings | None, args: argparse.Namespace) -> int:
             console.print("[bold]== schedule run caches ==[/bold]")
             console.print(
                 "  1) tickers refresh --markets all --force → 2) futures contracts --refresh"
+                " → 3) calendar refresh"
             )
             rc = run_cache_refresh_job(main_fn=main)
         else:
@@ -3264,6 +3441,229 @@ def _cmd_options_contracts(settings: Settings, args: argparse.Namespace) -> int:
     console.print("[yellow]Non implémenté:[/yellow] La gestion des contrats options est un scaffold.")
     console.print("Les options requièrent une logique de chaîne par strike/call/put non encore développée.")
     return 1
+
+
+_WEEKDAYS_FR = ("lun", "mar", "mer", "jeu", "ven", "sam", "dim")
+
+
+def _calendar_targets(settings: Settings, args: argparse.Namespace) -> list[Instrument]:
+    """Instruments de ``calendar refresh|holidays`` : options refusées si demandées."""
+    targets = _resolve_instruments(settings, args.instrument, args.type)
+    if args.type == InstrumentType.OPTIONS.value or (
+        args.instrument and all(i.type == InstrumentType.OPTIONS for i in targets)
+    ):
+        raise ValueError("options : pas de calendrier Massive géré (scaffold)")
+    return [i for i in targets if i.type != InstrumentType.OPTIONS]
+
+
+def _calendar_source_label(product_code: str | None) -> str:
+    """Libellé d'une source calendrier : un produit futures, ou les fériés actions."""
+    return f"futures:{product_code}" if product_code else "fériés NYSE/NASDAQ"
+
+
+def _format_intervals(intervals: tuple[tuple[datetime, datetime], ...], zone: ZoneInfo) -> str:
+    """``mer 17:00 → jeu 12:15, jeu 17:00→23:59`` dans le fuseau d'affichage."""
+    if not intervals:
+        return "—"
+    parts: list[str] = []
+    for start, end in intervals:
+        a, b = start.astimezone(zone), end.astimezone(zone)
+        if a.date() == b.date():
+            parts.append(f"{_WEEKDAYS_FR[a.weekday()]} {a:%H:%M}→{b:%H:%M}")
+        else:
+            parts.append(
+                f"{_WEEKDAYS_FR[a.weekday()]} {a:%H:%M} → {_WEEKDAYS_FR[b.weekday()]} {b:%H:%M}"
+            )
+    return ", ".join(parts)
+
+
+def _cmd_calendar_refresh(settings: Settings, args: argparse.Namespace) -> int:
+    """Commande ``myquantstore calendar refresh`` : historise les calendriers Massive."""
+    from myquantstore.api.client import MassiveClient
+    from myquantstore.market_calendar.refresh import plan_refresh, run_refresh
+
+    try:
+        targets = _calendar_targets(settings, args)
+    except ValueError as exc:
+        console.print(f"[red]Erreur:[/red] {exc}")
+        return 1
+    plans = plan_refresh(settings, targets)
+    if not plans:
+        console.print(
+            "[yellow]Aucun instrument futures, stocks, forex ou indices configuré.[/yellow]"
+        )
+        return 0
+
+    console.print("[bold]== calendar refresh ==[/bold]")
+    planned = Table(show_header=True, header_style="bold")
+    for col in ("Source", "Endpoint", "Depuis", "Motif"):
+        planned.add_column(col)
+    for plan in plans:
+        planned.add_row(
+            _calendar_source_label(plan.source.product_code),
+            plan.endpoint,
+            plan.start.isoformat() if plan.start else "—",
+            plan.reason,
+        )
+    console.print(planned)
+    if args.dry_run:
+        console.print("[dim]--dry-run : aucun appel API.[/dim]")
+        return 0
+    if not settings.api_key:
+        console.print("[red]Erreur:[/red] Aucune clé API. Exécutez 'myquantstore setup-key'.")
+        return 1
+
+    with MassiveClient(settings) as client:
+        results = run_refresh(plans, client, settings)
+
+    done = Table(show_header=True, header_style="bold")
+    for col in ("Source", "Reçu", "Fenêtre d'autorité", "Agrégat", "Statut"):
+        done.add_column(col)
+    for res in results:
+        window = f"{res.coverage[0]} → {res.coverage[1]}" if res.coverage else "—"
+        done.add_row(
+            _calendar_source_label(res.plan.source.product_code),
+            f"{res.fetched_rows} ligne(s)" if res.ok else "—",
+            window,
+            f"{res.rows_before} → {res.rows_after} ligne(s)",
+            "[green]ok[/green]" if res.ok else f"[red]erreur[/red] {res.error or ''}",
+        )
+    console.print(done)
+    return 0 if all(res.ok for res in results) else 1
+
+
+def _cmd_calendar_holidays(settings: Settings, args: argparse.Namespace) -> int:
+    """Commande ``myquantstore calendar holidays`` : fériés et séances hors norme."""
+    from datetime import date
+
+    from myquantstore.market_calendar.refresh import HOLIDAY_TYPES
+    from myquantstore.market_calendar.views import list_holidays
+    from myquantstore.query.timezone import resolve_timezone
+
+    try:
+        targets = _calendar_targets(settings, args)
+        start = date.fromisoformat(args.start) if args.start else None
+        end = date.fromisoformat(args.end) if args.end else None
+        tz = resolve_timezone(settings, override=args.timezone)
+    except ValueError as exc:
+        console.print(f"[red]Erreur:[/red] {exc}")
+        return 1
+    futures = list(dict.fromkeys(i.symbol for i in targets if i.type == InstrumentType.FUTURES))
+    rows = list_holidays(
+        settings,
+        futures=futures,
+        exchanges=any(i.type in HOLIDAY_TYPES for i in targets),
+        exchange_filter=args.exchange,
+        start=start,
+        end=end,
+    )
+    if not rows:
+        console.print(
+            "[yellow]Aucun férié connu pour ce filtre.[/yellow] "
+            "[dim]Historisez d'abord : myquantstore calendar refresh[/dim]"
+        )
+        return 0
+
+    zone = ZoneInfo(tz)
+    table = Table(show_header=True, header_style="bold")
+    for col in ("Date", "Jour", "Marché", "Type", f"Séances prévues ({tz})", "Nom"):
+        table.add_column(col)
+    for row in rows:
+        table.add_row(
+            row.day.isoformat(),
+            _WEEKDAYS_FR[row.day.weekday()],
+            ", ".join(row.markets),
+            ", ".join(row.kinds),
+            _format_intervals(row.intervals, zone),
+            row.name or "",
+        )
+    console.print(table)
+    console.print(
+        f"[dim]{len(rows)} ligne(s). Fériés NYSE/NASDAQ : servent stocks et indices, "
+        "indicatifs pour le forex (24/5).[/dim]"
+    )
+    return 0
+
+
+def _cmd_calendar_status(settings: Settings, args: argparse.Namespace) -> int:
+    """Commande ``myquantstore calendar status`` : couverture des calendriers historisés."""
+    import polars as pl
+
+    from myquantstore.market_calendar.refresh import HOLIDAY_TYPES
+    from myquantstore.market_calendar.store import (
+        CalendarSource,
+        known_windows,
+        list_dumps,
+        read_calendar,
+        read_calendar_meta,
+    )
+    from myquantstore.market_calendar.views import NO_SESSION, FuturesSchedule
+
+    now = datetime.now(UTC)
+    tomorrow = (now + timedelta(days=1)).date()
+    holidays = CalendarSource.market_holidays()
+    sources: list[CalendarSource] = []
+    if any(i.type in HOLIDAY_TYPES for i in settings.all_instruments()) or (
+        holidays.aggregate_path(settings).exists()
+    ):
+        sources.append(holidays)
+    sources.extend(CalendarSource.futures_schedule(symbol) for symbol in settings.futures)
+    if not sources:
+        console.print(
+            "[yellow]Aucun instrument futures, stocks, forex ou indices configuré.[/yellow]"
+        )
+        return 0
+
+    table = Table(show_header=True, header_style="bold")
+    for col in (
+        "Source",
+        "Données",
+        "Fenêtres d'autorité",
+        "Dumps",
+        "Dernier refresh",
+        "Fériés à venir",
+    ):
+        table.add_column(col)
+    missing = False
+    for source in sources:
+        label = _calendar_source_label(source.product_code)
+        meta = read_calendar_meta(source, settings)
+        if meta is None:
+            missing = True
+            table.add_row(label, "[yellow]absent[/yellow]", "—", "0", "—", "—")
+            continue
+        df = read_calendar(source, settings)
+        if source.product_code is None:
+            data = (
+                f"{meta.get('data_start')} → {meta.get('data_end')} "
+                f"({df['date'].n_unique()} jour(s))"
+            )
+            upcoming = df.filter(pl.col("date") >= tomorrow)["date"].n_unique()
+        else:
+            schedule = FuturesSchedule(source.product_code, df)
+            data = (
+                f"{schedule.coverage[0]} → {schedule.coverage[1]} "
+                f"({schedule.session_count} séance(s))"
+                if schedule.coverage
+                else f"{df.height} événement(s), aucune séance complète"
+            )
+            upcoming = sum(1 for ev in schedule.events(start=tomorrow) if NO_SESSION in ev.kinds)
+        windows = ", ".join(f"{a} → {b}" for a, b in known_windows(meta)) or "—"
+        refreshed = "—"
+        if meta.get("last_refreshed_at"):
+            at = datetime.fromisoformat(str(meta["last_refreshed_at"]))
+            refreshed = f"{at:%Y-%m-%d %H:%M} UTC (il y a {(now - at).days} j)"
+        table.add_row(
+            label, data, windows, str(len(list_dumps(source, settings))), refreshed, str(upcoming)
+        )
+    console.print("[bold]== calendar status ==[/bold]")
+    console.print(table)
+    if missing:
+        console.print(
+            "[dim]Source absente : myquantstore calendar refresh "
+            "(le job schedule caches le fait chaque samedi).[/dim]"
+        )
+    return 0
 
 
 def _resolve_markets_cli(

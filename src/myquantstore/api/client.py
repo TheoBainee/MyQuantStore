@@ -266,6 +266,20 @@ class MassiveClient:
         except _RetryableServerError as e:
             raise ServerError(path, e.status_code) from e
 
+    def get_list(self, path: str, **params: Any) -> list[dict[str, Any]]:
+        """GET sur un endpoint qui renvoie un **tableau** JSON (sans enveloppe ``results``).
+
+        Ex. ``/v1/marketstatus/upcoming``. Même retry / throttle que :meth:`get`,
+        qui ne transforme pas le JSON (son ``cast`` est purement statique) : un
+        tableau traverse donc tel quel et on vérifie ici sa forme.
+
+        :raises ClientError: Si la réponse n'est pas un tableau JSON.
+        """
+        data: object = self.get(path, **params)
+        if not isinstance(data, list):
+            raise ClientError(path, 200, f"tableau JSON attendu, reçu {type(data).__name__}")
+        return cast("list[dict[str, Any]]", data)
+
     def get_paginated(self, path: str, **params: Any) -> list[dict[str, Any]]:
         """Effectue une requête GET paginée et retourne tous les résultats concaténés.
 

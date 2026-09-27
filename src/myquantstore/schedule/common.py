@@ -50,8 +50,10 @@ JOB_SPECS: dict[str, JobSpec] = {
     JOB_CACHES: JobSpec(
         id=JOB_CACHES,
         service_name="myquantstore-caches",
-        description="refresh caches Massive : tickers + futures contracts",
-        unit_description="MyQuantStore Massive cache refresh (tickers + futures contracts)",
+        description="refresh caches Massive : tickers + futures contracts + calendriers",
+        unit_description=(
+            "MyQuantStore Massive cache refresh (tickers + futures contracts + calendar)"
+        ),
         timer_description="MyQuantStore periodic Massive cache refresh",
         default_on_calendar="Sat *-*-* 03:00:00",
         default_cron="0 3 * * 6",

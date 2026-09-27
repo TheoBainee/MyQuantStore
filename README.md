@@ -26,6 +26,7 @@ Deux familles de timeframes / sources, **sans se croiser** pour reconstruire un 
 - **Dumps pseudo-bruts** : les réponses API sont normalisées au format interne canonique (timestamps, champs, colonnes d'identité) avant écriture dans `data/raw/` — suffisants pour reconstruire intégralement les agrégats (pas de dump JSON brut).
 - **Ajustement split** pour stocks : stockage en prix **bruts** (`adjusted=false`) + ajustement à la query (toggle `--no-split`, splits ON par défaut via le cache `/stocks/v1/splits`).
 - Mise en cache intelligente : contrats futures (`/futures/v1/contracts`), corporate actions Massive (`/stocks/v1/splits` + `/dividends`) et `yahoo_actions/` (1day stocks), TTL commun configurable.
+- **Calendriers de marché historisés** (`myquantstore calendar`) : séances futures (`/futures/v1/schedules`) et fériés NYSE/NASDAQ (`/v1/marketstatus/upcoming`, pour stocks, forex et indices), stockés en dumps + agrégat car les fériés passés disparaissent de l'API ; `doctor gaps` s'en sert pour ne plus signaler fériés et clôtures anticipées.
 - Gestion automatique du **rollover** des contrats futures (J-7 avant expiration = dernier jour de l'ancien contrat, switch au jour ouvré suivant) via la `RolloverChain`.
 - **Cascade automatique** des dépendances (type-aware) : `query` déclenche `aggregate` → `fetch` → `contracts`/`splits` si nécessaire.
 - Normalisation des prix en **multiples entiers de tick size** (`Int32`) via `--normalize-tick-size` (futures).
@@ -146,6 +147,7 @@ Deux jobs indépendants (`schedule <verbe> [fetch|caches]`, sans job = **fetch**
 
 1. **`tickers refresh --markets all --force`**
 2. **`futures contracts --refresh`**
+3. **`calendar refresh`** — historise les calendriers de marché (voir plus bas)
 
 Un `myquantstore chart` déjà lancé prend en compte les nouveaux contrats sans redémarrage : la chaîne de rollover est reconstruite dès que le cache contrats change sur disque (un changement de code ou de `days_before_expiry` demande toujours un restart).
 
@@ -229,7 +231,7 @@ Flag racine : `myquantstore -v|--verbose <commande>` force le logging DEBUG (ove
 |---|---|
 | `myquantstore init [--minimal\|--full] [-k KEY]` | Bootstrap XDG (config + dirs + clé optionnelle) |
 | `myquantstore doctor [--ping]` | Diagnostic install / config / chemins (exit 1 si bloquant) |
-| `myquantstore doctor gaps [--instrument NQ] [--type futures] [--intraday-begin HH:MM] [--intraday-end HH:MM] [--timezone IANA] [--min-gap-minutes N] [--start] [--end] [--confirmed-only]` | Audit des trous de données 1min ; exit 1 si un trou est confirmé par un autre instrument |
+| `myquantstore doctor gaps [--instrument NQ] [--type futures] [--intraday-begin HH:MM] [--intraday-end HH:MM] [--timezone IANA] [--min-gap-minutes N] [--start] [--end] [--confirmed-only] [--no-calendar]` | Audit des trous de données 1min ; exit 1 si un trou est confirmé par un autre instrument et non expliqué par le calendrier de marché |
 | `myquantstore setup-key [-k KEY] [-y]` | Configure la clé API dans `~/.config/myquantstore/.env` |
 | `myquantstore schedule {install\|run\|status\|show\|uninstall} [fetch\|caches]` | Jobs périodiques : fetch (OHLCV sam. 07h) et caches (Massive sam. 03h) |
 | `myquantstore config` | Affiche la configuration résolue (clé masquée) + chemin du fichier |
@@ -242,6 +244,9 @@ Flag racine : `myquantstore -v|--verbose <commande>` force le logging DEBUG (ove
 | `myquantstore portfolio {stats\|corr\|cov\|optimize\|allocate\|frontier} [-i …] [--value] [--objective equal\|min-vol\|max-sharpe] [--export]` | MPT stocks 1day + lots ; chart `portfolio:*` (voir [docs/PORTFOLIO.md](docs/PORTFOLIO.md)) |
 | `myquantstore futures contracts [--symbol ES] [--refresh] [--active-only]` | Liste/rafraîchit le cache contrats futures |
 | `myquantstore options contracts` | Scaffold options (`NotImplementedError`) |
+| `myquantstore calendar refresh [--instrument ES] [--type futures] [--dry-run]` | Historise les calendriers de marché Massive (dumps + agrégat) ; exit 1 si une source échoue |
+| `myquantstore calendar holidays [--instrument ES] [--type stocks] [--start] [--end] [--exchange NYSE] [--timezone IANA]` | Fériés, clôtures anticipées et séances interrompues connus (lecture seule) |
+| `myquantstore calendar status` | Couverture des calendriers historisés (données, dumps, dernier refresh) |
 | `myquantstore tickers refresh [--markets stocks fx] [--active true\|false\|all] [--force]` | Fetch/cache shards `tickers/{market}/{active\|inactive}.parquet` + types |
 | `myquantstore tickers types [--force]` | Liste/rafraîchit le cache des ticker types |
 | `myquantstore tickers values [--markets] [--column] [--active\|--inactive]` | Valeurs distinctes du cache tickers |
@@ -305,6 +310,42 @@ s'il reste un trou confirmé — utilisable comme garde-fou après un `fetch`.
 myquantstore doctor gaps                                   # plage [chart] intraday_begin/end
 myquantstore doctor gaps --type futures --start 2026-09-01 --confirmed-only
 myquantstore doctor gaps -i NQ --intraday-begin 17:00 --intraday-end 04:00 --min-gap-minutes 30
+```
+
+Si les calendriers de marché sont historisés (`myquantstore calendar refresh`), un trou qui
+tombe hors séance prévue (férié, arrêt de 12:00 à 17:00 CT un lundi férié, clôture
+anticipée) est marqué **attendu** et n'est jamais compté, même confirmé. Les jours sans
+aucune barre sont répartis entre fermés selon le calendrier, séance prévue mais aucune
+barre (⚠, vrai trou) et hors calendrier. Le forex n'a pas de calendrier propre chez
+Massive : ses trous restent jugés par la seule confirmation croisée. `--no-calendar`
+ignore le calendrier.
+
+### Calendriers de marché (`myquantstore calendar`)
+
+Historise les calendriers de marché Massive pour les types gérés (hors options et crypto) :
+
+| Type | Endpoint | Contenu |
+|---|---|---|
+| futures | `/futures/v1/schedules` | Séances par produit (`pre_open`, `open`, `close`), historique depuis mi-mars 2025 et ~20 mois à l'avance |
+| stocks, forex, indices | `/v1/marketstatus/upcoming` | Fériés et clôtures anticipées NYSE / NASDAQ **à venir** (~1 an), même endpoint pour les trois types |
+
+Ce sont des **données**, pas un cache : un férié passé disparaît de `/upcoming`, et la
+fenêtre d'historique des schedules avance. Chaque `refresh` écrit donc un dump immuable
+(`data/raw/calendar/`) puis le fusionne dans l'agrégat (`data/aggregate/calendar/`) : un
+snapshot fait autorité sur la plage qu'il couvre, le passé n'est jamais effacé. Pour
+stocks, forex et indices, l'historique commence au premier `refresh` (Massive ne fournit
+pas les fériés passés). Le job `schedule caches` lance `calendar refresh` chaque samedi.
+
+Côté futures, les fériés ne sont pas nommés par l'API : ils sont déduits des séances
+(jour ouvré sans séance, clôture anticipée, séance interrompue) et nommés d'après les
+fériés NYSE de même date quand ils sont connus.
+
+```bash
+myquantstore calendar refresh --dry-run               # plages qui seraient demandées
+myquantstore calendar refresh                          # historise (1 appel/produit futures + 1 snapshot fériés)
+myquantstore calendar holidays --start 2026-01-01      # fériés et séances hors norme connus
+myquantstore calendar holidays -i ES --timezone America/New_York
+myquantstore calendar status                           # couverture, dumps, dernier refresh
 ```
 
 ### Visualisation interactive (`myquantstore chart`)
@@ -435,8 +476,10 @@ MyQuantStore/
 │  ├─ api/                      # httpx + tenacity (Massive) + yahoo (curl_cffi)
 │  │  ├─ aggs_futures.py, aggs_v2.py, contracts.py
 │  │  ├─ corporate_actions.py   # splits + dividends Massive
+│  │  ├─ market_calendar.py     # fériés /v1/marketstatus/upcoming + /futures/v1/schedules
 │  │  ├─ tickers.py, yahoo.py, client.py
 │  ├─ contracts/                # Cache contrats + RolloverChain
+│  ├─ market_calendar/          # Calendriers historisés (store, refresh, views)
 │  ├─ corporate_actions/        # Cache splits/dividends Massive (1min)
 │  ├─ yahoo_actions/            # Cache splits/dividends Yahoo (1day)
 │  ├─ tickers/                  # Référentiel + search + yahoo_map

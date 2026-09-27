@@ -21,17 +21,27 @@ cours de séance).
 instrument (même type) a des barres pendant ce créneau. Un férié ou une clôture
 anticipée touchent tous les instruments → trou non confirmé ; une panne de flux
 sur un seul produit → trou confirmé (le signal vraiment problématique).
+
+**Calendrier de marché** (:func:`explain_gaps`, données de ``calendar refresh``) :
+un trou tombant hors séance prévue (férié, arrêt, clôture anticipée) est
+*attendu* et n'est jamais compté, même confirmé (deux produits peuvent avoir
+des calendriers différents). Les sessions vides sont réparties entre fermées
+selon le calendrier et sans barre alors qu'une séance était prévue.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
+from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 import polars as pl
 
 from myquantstore.query.timezone import ensure_window_start_utc
+
+if TYPE_CHECKING:
+    from myquantstore.market_calendar.views import TradingCalendar
 
 _ONE_MINUTE = timedelta(minutes=1)
 
@@ -58,6 +68,9 @@ class Gap:
     confirmed_by: list[str] = field(default_factory=list)
     """Autres instruments ayant des barres pendant le trou."""
 
+    calendar_note: str = ""
+    """Fermeture prévue par le calendrier (non vide = trou attendu, jamais compté)."""
+
     @property
     def minutes(self) -> int:
         """Durée du trou en minutes."""
@@ -72,6 +85,10 @@ class GapReport:
     sessions_checked: int
     gaps: list[Gap]
     empty_sessions: list[date]
+    closed_sessions: dict[date, str] = field(default_factory=dict)
+    """Sessions vides fermées selon le calendrier → libellé (rempli par :func:`explain_gaps`)."""
+    expected_empty_sessions: list[date] = field(default_factory=list)
+    """Sessions vides alors que le calendrier prévoyait une séance dans la plage."""
 
 
 def unique_timestamps(df: pl.DataFrame) -> pl.Series:
@@ -215,6 +232,42 @@ def confirm_gaps(report: GapReport, peers: dict[str, pl.Series]) -> None:
             if idx < ts.len() and ts[idx] < gap.end:
                 confirmed.append(key)
         gap.confirmed_by = confirmed
+
+
+def explain_gaps(
+    report: GapReport,
+    calendar: TradingCalendar,
+    *,
+    intraday_begin: time,
+    intraday_end: time,
+    timezone: str,
+    min_gap_minutes: int,
+) -> None:
+    """Confronte trous et sessions vides au calendrier de marché (modifie ``report``).
+
+    - Trou sur lequel le calendrier fait autorité et qui compte moins de
+      ``min_gap_minutes`` de séance prévue → attendu (``Gap.calendar_note``).
+    - Session vide couverte : fermée (moins de ``min_gap_minutes`` de séance
+      prévue dans la plage) → ``closed_sessions`` ; sinon → ``expected_empty_sessions``.
+
+    Hors couverture du calendrier, rien ne change.
+    """
+    wrap = intraday_begin > intraday_end
+    tz = ZoneInfo(timezone)
+    for gap in report.gaps:
+        if (
+            calendar.covers(gap.start, gap.end)
+            and calendar.open_minutes(gap.start, gap.end) < min_gap_minutes
+        ):
+            gap.calendar_note = calendar.closure_label(gap.start)
+    for sess in report.empty_sessions:
+        win_start, win_end = _session_bounds(sess, intraday_begin, intraday_end, wrap, tz)
+        if not calendar.covers(win_start, win_end):
+            continue
+        if calendar.open_minutes(win_start, win_end) < min_gap_minutes:
+            report.closed_sessions[sess] = calendar.closure_label(win_start)
+        else:
+            report.expected_empty_sessions.append(sess)
 
 
 def _session_bounds(

@@ -10,7 +10,7 @@
 #   systemctl --user enable --now myquantstore-caches.timer
 
 [Unit]
-Description=MyQuantStore Massive cache refresh (tickers + futures contracts)
+Description=MyQuantStore Massive cache refresh (tickers + futures contracts + calendar)
 After=network-online.target
 Wants=network-online.target
 

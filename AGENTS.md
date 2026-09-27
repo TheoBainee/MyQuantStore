@@ -8,6 +8,7 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
 - Utiliser **Polars** exclusivement (pas de pandas).
 - Tout le stockage se fait en **fichiers Parquet** (layout multi-type × multi-résolution).
 - Caches : contrats futures + splits/dividends Massive (1min) ; `cache/yahoo_actions/` pour daily **stocks** only.
+- Calendriers de marché Massive **historisés** (`myquantstore calendar`) : `/futures/v1/schedules` (futures) + `/v1/marketstatus/upcoming` (stocks/forex/indices, fériés NYSE/NASDAQ **à venir** uniquement) → `data/{raw,aggregate}/calendar/` (données, pas un cache).
 - Cascade type-aware **et par résolution** (query day → fetch 1day only).
 - Fetch défaut : `--timeframe all` (1min + 1day Yahoo multi-type) ; `1min` | `1day` pour cibler.
   Exit 1 si un job est `error` ou `not_implemented` (cron / `schedule run`).
@@ -77,6 +78,15 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
 - Dividendes : facteurs calculés sur l'espace split-adjusted Yahoo ; `--adjust` à la query.
 - Premier run Yahoo : toujours `period=max` (tous types) ; `history_months` = Massive only.
 
+### Calendriers de marché (`market_calendar/`, `myquantstore calendar`)
+- Endpoint par type : futures → `/futures/v1/schedules` (un appel paginé par produit, `sort=session_end_date.asc`, `limit=1000`) ; stocks, forex, indices → **le même** `/v1/marketstatus/upcoming` (un seul snapshot par run, tableau JSON sans `results`, NYSE/NASDAQ). Options/crypto non gérés.
+- **Données historisées, pas un cache** : `/upcoming` ne renvoie que le futur (~1 an) et la fenêtre des schedules avance → dumps immuables `data/raw/calendar/{market_holidays|futures_schedules/{PRODUIT}}/{run_ts}.parquet` (sidecar `coverage_start` / `coverage_end`) + agrégats `data/aggregate/calendar/{market_holidays|futures_schedules/{PRODUIT}}.parquet`. Aucun rattrapage des fériés actions passés : la couverture démarre au 1er refresh.
+- **Fusion par fenêtre d'autorité** : un dump remplace l'agrégat sur la plage qu'il couvre (fériés : lendemain du run → dernier férié listé ; schedules : début demandé → dernière séance reçue) ; rien n'est effacé hors plage. `rebuild()` rejoue les dumps (invariant de reconstruction). Sidecar d'agrégat : `last_run_ts`, `known_windows` (union des fenêtres), `requested_from`.
+- Refresh futures : 1er run depuis `today - history_months.futures` ; ensuite depuis `dernier run - overlap_buffer_days`, sans borne haute (séances futures re-téléchargées, révisions prises en compte) ; extension arrière si `history_months.futures` augmente (`requested_from` évite de re-télécharger en boucle).
+- Quirks API (sonde 2026-09-27) : `product_code` renvoie aussi les combos (« ES Equity Calendar Spread », « YM Butterfly ») aux horaires identiques → agrégat dédupliqué sur `(product_code, session_end_date, event, timestamp)` en gardant l'outright ; événements `pre_open` / `open` / `close` seulement ; historique réel à partir de mi-mars 2025 (séances incomplètes avant = trou de connaissance, jamais un férié) ; séances publiées ~20 mois à l'avance ; artefact `open` samedi 05:00→17:00 sur des vendredis fériés 2026-2027 (affiché tel quel, sans effet sur `doctor gaps`).
+- Dérivation (`views.py`, trade date = `session_end_date`, fuseau America/Chicago) : intervalle de trading = `open` → `pre_open` | `close` suivant de la même séance (`pre_open` en séance = arrêt) ; **férié** = jour ouvré sans séance dans la couverture (séances complètes) ; **clôture anticipée** = dernier `close` avant l'heure modale ; **séance interrompue** = plusieurs intervalles (lundi férié : arrêt 12:00→17:00 porté par la séance du mardi). Nom repris des fériés NYSE/NASDAQ de même date quand connu.
+- CLI : `calendar refresh [-i|--type] [--dry-run]` (une source en erreur n'arrête pas les autres, exit 1), `calendar holidays [-i|--type] [--start] [--end] [--exchange] [--timezone]` (lecture seule, marchés au calendrier identique regroupés), `calendar status`. Job `schedule caches` : 3e étape `calendar refresh`.
+
 ### Pipeline & Architecture
 - Fetchers multi-type (FuturesFetcher, StocksFetcher, V2SingleSymbolFetcher, YahooDailyFetcher, OptionsFetcher scaffold).
 - Cascade type-aware dans pipeline/cascade.py.
@@ -125,7 +135,7 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
 - **`myquantstore schedule`** (backends `systemd` user timer + `cron`) :
   - Deux jobs indépendants (`schedule <verbe> [fetch|caches]`, sans job = **fetch**) :
     - **fetch** : `schedule run` = **fetch → aggregate → status --check** (aggregate pour régénérer le cache parquet consommé en externe). Défaut samedi 07:00 (`OnCalendar=Sat *-*-* 07:00:00` / cron `0 7 * * 6`). Units `myquantstore-fetch.*` ; cron `# BEGIN MYQUANTSTORE`.
-    - **caches** : `schedule run caches` = **tickers refresh --markets all --force** puis **futures contracts --refresh**. Défaut samedi 03:00 (`OnCalendar=Sat *-*-* 03:00:00` / cron `0 3 * * 6`). Units `myquantstore-caches.*` ; cron `# BEGIN MYQUANTSTORE-CACHES`. Le `chart` en cours d'exécution recharge ses `RolloverChain` quand le `mtime` du cache contrats change (pas de restart) ; `serve` reconstruit déjà la chaîne à chaque requête. Code / config (`days_before_expiry`) = restart.
+    - **caches** : `schedule run caches` = **tickers refresh --markets all --force** puis **futures contracts --refresh** puis **calendar refresh**. Défaut samedi 03:00 (`OnCalendar=Sat *-*-* 03:00:00` / cron `0 3 * * 6`). Units `myquantstore-caches.*` ; cron `# BEGIN MYQUANTSTORE-CACHES`. Le `chart` en cours d'exécution recharge ses `RolloverChain` quand le `mtime` du cache contrats change (pas de restart) ; `serve` reconstruit déjà la chaîne à chaque requête. Code / config (`days_before_expiry`) = restart.
   - `install|uninstall|status|show` ; `--backend auto|systemd|cron` ; `--fetch-args` (job fetch only).
   - `status` affiche les deux jobs ; `uninstall` sans job = les deux.
   - Templates manuels : `contrib/systemd/`, `contrib/cron/`.
@@ -147,6 +157,7 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
 - **Section `[quality]`** : `data_quality_trigger` (tolérance `query --check-ticksize-accuracy`, ex-`[tests]` — encore lu avec warning de dépréciation) + `min_gap_minutes` (`doctor gaps`).
   - Seules les sessions avec au moins une barre sont auditées (trous internes + bords de plage) ; bord de début de la 1re session et bord de fin de la dernière ignorés ; sessions vides (fériés probables) listées à part.
   - **Confirmation croisée** : trou CONFIRMÉ si un autre instrument du même type (avec agrégé 1min) a des barres pendant le créneau (panne de flux), non confirmé sinon (férié, clôture anticipée). Exit 1 seulement s'il reste un trou confirmé ; `--confirmed-only` filtre l'affichage.
+  - **Calendrier de marché** (`explain_gaps` + `load_calendar`, données `calendar refresh`) : trou avec moins de `min_gap_minutes` de séance prévue (schedules futures ; fériés NYSE/NASDAQ pour stocks/indices ; aucun calendrier forex) = **attendu**, jamais compté même confirmé. Sessions vides réparties : fermées selon le calendrier / séance prévue mais aucune barre (⚠) / hors calendrier. `--no-calendar` ignore le calendrier.
 
 ### Tests & Qualité
 - Tests pytest + respx (mocks API).

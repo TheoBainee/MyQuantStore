@@ -156,16 +156,22 @@ options : NotImplemented
 ```
 {data_dir}/
 ├─ raw/
-│  └─ {type}/              # futures, stocks, ...
-│     └─ {symbol}/         # ES, AAPL
-│        └─ {ticker}/      # ESM5 (contrat futures) ou = symbol (stocks)
-│           └─ {resolution}/   # 1min (Massive) | 1day (Yahoo multi-type)
-│              └─ {run_ts}.parquet (+ .meta.json, immuable)
+│  ├─ {type}/              # futures, stocks, ...
+│  │  └─ {symbol}/         # ES, AAPL
+│  │     └─ {ticker}/      # ESM5 (contrat futures) ou = symbol (stocks)
+│  │        └─ {resolution}/   # 1min (Massive) | 1day (Yahoo multi-type)
+│  │           └─ {run_ts}.parquet (+ .meta.json, immuable)
+│  └─ calendar/            # calendriers de marché (dumps immuables)
+│     ├─ market_holidays/{run_ts}.parquet
+│     └─ futures_schedules/{product}/{run_ts}.parquet
 └─ aggregate/
-   └─ {type}/
-      └─ {symbol}/
-         ├─ 1min.parquet (+ .meta.json)   # Massive
-         └─ 1day.parquet (+ .meta.json)   # Yahoo multi-type
+   ├─ {type}/
+   │  └─ {symbol}/
+   │     ├─ 1min.parquet (+ .meta.json)   # Massive
+   │     └─ 1day.parquet (+ .meta.json)   # Yahoo multi-type
+   └─ calendar/
+      ├─ market_holidays.parquet
+      └─ futures_schedules/{product}.parquet
 
 {cache_dir}/
 ├─ contracts/              # cache contrats futures (inchangé)
@@ -191,6 +197,18 @@ options : NotImplemented
 | Extraday | Yahoo (chart curl_cffi) | `1day` multi-type | 2d, 1w… |
 
 - Helpers : `instruments.timeframe_family`, `base_resolution_for_timeframe`, `DEFAULT_RESOLUTION`.
+
+**Calendriers de marché** (`myquantstore calendar`, détail : `TECHNICAL_DESIGN.md` §10bis) :
+
+| Type | Endpoint Massive | Calendrier |
+|---|---|---|
+| `futures` | `/futures/v1/schedules` | séances par produit (fériés, clôtures anticipées, arrêts déduits) |
+| `stocks`, `indices` | `/v1/marketstatus/upcoming` | fériés NYSE/NASDAQ à venir, historisés à chaque refresh |
+| `forex` | `/v1/marketstatus/upcoming` (même endpoint) | calendrier actions US, indicatif seulement (FX 24/5, pas utilisé par `doctor gaps`) |
+| `options` | — | non géré |
+
+Données historisées (pas un cache) : les fériés passés disparaissent de l'API. Hors cascade :
+refresh hebdo par le job `schedule caches` (`calendar refresh`).
 
 ### Recherche d'instruments (`myquantstore search` / `config add`)
 

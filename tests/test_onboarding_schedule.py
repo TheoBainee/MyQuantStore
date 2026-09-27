@@ -287,6 +287,7 @@ class TestScheduleRunner:
         assert run_cache_refresh_job(main_fn=fake_main) == 0
         assert calls[0] == ["tickers", "refresh", "--markets", "all", "--force"]
         assert calls[1] == ["futures", "contracts", "--refresh"]
+        assert calls[2] == ["calendar", "refresh"]
 
     def test_run_caches_stops_on_tickers_failure(self):
         def fake_main(argv: list[str] | None = None) -> int:
@@ -296,3 +297,10 @@ class TestScheduleRunner:
             return 0
 
         assert run_cache_refresh_job(main_fn=fake_main) == 3
+
+    def test_run_caches_propagates_calendar_failure(self):
+        def fake_main(argv: list[str] | None = None) -> int:
+            assert argv is not None
+            return 1 if argv[0] == "calendar" else 0
+
+        assert run_cache_refresh_job(main_fn=fake_main) == 1
