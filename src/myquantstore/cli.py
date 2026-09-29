@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -265,10 +265,30 @@ _NO_CASCADE_HELP = (
     "Désactive la cascade auto (pas de refresh caches listing / fetch préalable "
     "si dumps absents). Erreur claire si un prérequis manque."
 )
+_START_DATE_FETCH_HELP = (
+    "Début de plage explicite YYYY-MM-DD (inclusif). Remplace la plage auto "
+    "(premier run / incrémental) et ignore le skip « dump du jour ». "
+    "Usage : combler un trou ou étendre l'historique en arrière."
+)
+_END_DATE_FETCH_HELP = (
+    "Fin de plage explicite YYYY-MM-DD (inclusif, défaut aujourd'hui). "
+    "Requiert --start-date. Une date future est ramenée à aujourd'hui."
+)
 _FORCE_FETCH_HELP = (
     "Ignore le skip « déjà fait aujourd'hui » et relance le fetch "
     "(utile si agrégé STALE alors qu'un dump du jour existe)."
 )
+
+
+def _parse_fetch_date(value: str) -> date:
+    """Type argparse ``--start-date`` / ``--end-date`` : ``YYYY-MM-DD`` strict."""
+    raw = value.strip()
+    try:
+        if len(raw) != 10:
+            raise ValueError
+        return date.fromisoformat(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"date invalide '{value}' (attendu YYYY-MM-DD)") from None
 
 
 def _add_instrument_filter(
@@ -750,7 +770,8 @@ def _build_parser() -> argparse.ArgumentParser:
             "\n"
             "Premier run: history_months (Massive) ou period=max (Yahoo).\n"
             "Runs suivants: depuis latest − overlap_buffer.\n"
-            "Skip si un dump du jour existe déjà (sauf --force).\n"
+            "Plage explicite: --start-date [--end-date] (backfill d'un trou).\n"
+            "Skip si un dump du jour existe déjà (sauf --force ou plage explicite).\n"
             "Le résumé affiche latest= / lag= / STALE si données périmées."
         ),
         epilog=(
@@ -759,7 +780,9 @@ def _build_parser() -> argparse.ArgumentParser:
             "  myquantstore fetch -i SKHYV --timeframe 1min\n"
             "  myquantstore fetch -i ES --type futures --force\n"
             "  myquantstore fetch --type stocks --timeframe 1day --dry-run\n"
-            "  myquantstore fetch -i AAPL --force         # re-fetch malgré dump du jour"
+            "  myquantstore fetch -i AAPL --force         # re-fetch malgré dump du jour\n"
+            "  myquantstore fetch -i ES --timeframe 1min --start-date 2026-03-09 "
+            "--end-date 2026-03-13"
         ),
     )
     _add_instrument_filter(p_fetch)
@@ -768,6 +791,20 @@ def _build_parser() -> argparse.ArgumentParser:
         default="all",
         metavar="TF",
         help=_TIMEFRAME_FETCH_HELP,
+    )
+    p_fetch.add_argument(
+        "--start-date",
+        type=_parse_fetch_date,
+        default=None,
+        metavar="YYYY-MM-DD",
+        help=_START_DATE_FETCH_HELP,
+    )
+    p_fetch.add_argument(
+        "--end-date",
+        type=_parse_fetch_date,
+        default=None,
+        metavar="YYYY-MM-DD",
+        help=_END_DATE_FETCH_HELP,
     )
     p_fetch.add_argument("--force", action="store_true", help=_FORCE_FETCH_HELP)
     p_fetch.add_argument(
@@ -2476,11 +2513,20 @@ def _cmd_fetch(settings: Settings, args: argparse.Namespace) -> int:
     from myquantstore.api.client import MassiveClient
     from myquantstore.instruments import RESOLUTION_1MIN
     from myquantstore.pipeline.cascade import ensure_pre_fetch, print_status_snapshot
-    from myquantstore.pipeline.historian import resolve_fetch_resolutions, run_fetch
+    from myquantstore.pipeline.historian import (
+        resolve_fetch_date_range,
+        resolve_fetch_resolutions,
+        run_fetch,
+    )
 
     try:
         instruments = _resolve_instruments(settings, args.instrument, args.type)
         resolutions = resolve_fetch_resolutions(settings, getattr(args, "timeframe", "all"))
+        start_date, end_date = resolve_fetch_date_range(
+            getattr(args, "start_date", None),
+            getattr(args, "end_date", None),
+            datetime.now(UTC).date(),
+        )
     except ValueError as e:
         console.print(f"[red]Erreur:[/red] {e}")
         return 1
@@ -2510,6 +2556,8 @@ def _cmd_fetch(settings: Settings, args: argparse.Namespace) -> int:
             force=args.force,
             dry_run=args.dry_run,
             resolutions=resolutions,
+            start_date=start_date,
+            end_date=end_date,
         )
 
     console.print("\n[bold]== Résumé ==[/bold]")

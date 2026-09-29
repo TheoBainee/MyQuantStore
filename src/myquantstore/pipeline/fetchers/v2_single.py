@@ -22,7 +22,7 @@ Pas de RolloverChain — la chaîne est une
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import polars as pl
 
@@ -49,6 +49,8 @@ class V2SingleSymbolFetcher(InstrumentFetcher):
         client: MassiveClient,
         force: bool = False,
         dry_run: bool = False,
+        start_date: date | None = None,
+        end_date: date | None = None,
     ) -> dict[str, object]:
         """Historise un instrument forex ou indices via l'endpoint v2."""
         symbol = instrument.symbol
@@ -63,8 +65,8 @@ class V2SingleSymbolFetcher(InstrumentFetcher):
 
         resolution = RESOLUTION_1MIN
 
-        # 1. Vérifier "déjà fait aujourd'hui"
-        if not force and not dry_run:
+        # 1. Vérifier "déjà fait aujourd'hui" (contourné par une plage explicite)
+        if not force and not dry_run and start_date is None:
             already_done, existing_run_ts = has_run_today(instrument, settings)
             if already_done:
                 logger.warning(
@@ -87,7 +89,9 @@ class V2SingleSymbolFetcher(InstrumentFetcher):
             else (None, None)
         )
 
-        if oldest_date is None:
+        if start_date is not None:
+            cover_start = start_date
+        elif oldest_date is None:
             cover_start = target_start
         else:
             cover_start = (
@@ -95,7 +99,7 @@ class V2SingleSymbolFetcher(InstrumentFetcher):
                 if latest_date
                 else target_start
             )
-        cover_end = today
+        cover_end = (end_date or today) if start_date is not None else today
 
         if cover_start > cover_end:
             logger.warning(

@@ -15,6 +15,7 @@ exploitable par la commande ``myquantstore fetch``.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from datetime import date
 
 from myquantstore.api.client import MassiveClient
 from myquantstore.config import Settings
@@ -32,6 +33,8 @@ class InstrumentFetcher(ABC):
         client: MassiveClient,
         force: bool = False,
         dry_run: bool = False,
+        start_date: date | None = None,
+        end_date: date | None = None,
     ) -> dict[str, object]:
         """Historise un instrument.
 
@@ -40,6 +43,11 @@ class InstrumentFetcher(ABC):
         :param client: Client Massive authentifié.
         :param force: Si True, relance même si déjà fait aujourd'hui.
         :param dry_run: Si True, calcule le plan sans appeler l'API ni écrire.
+        :param start_date: Plage explicite (``--start-date``, inclusive). Remplace
+            le calcul automatique (premier run / incrémental) et contourne le
+            skip « dump du jour ». ``None`` = comportement automatique.
+        :param end_date: Borne de fin explicite (``--end-date``, inclusive).
+            Utilisée seulement avec ``start_date`` ; ``None`` = aujourd'hui.
         :return: Dict de résultat ``{status, candles, ...}`` (homogène entre types).
         """
         ...

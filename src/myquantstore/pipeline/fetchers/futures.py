@@ -5,8 +5,9 @@ Logique d'historisation spécifique aux futures :
 1. Récupérer le cache contrats (:class:`ContractsCache`).
 2. Construire la :class:`RolloverChain` à partir des contrats.
 3. Pour chaque contrat actif sur la période cible :
-   - Skip **par ticker** si un dump du jour existe déjà (sauf ``--force``).
-   - Déterminer le range (premier run vs incrémental vs extension arrière).
+   - Skip **par ticker** si un dump du jour existe déjà (sauf ``--force`` ou
+     plage explicite ``--start-date``).
+   - Déterminer le range (premier run vs incrémental vs plage explicite).
    - Fetch via ``/futures/v1/aggs/{ticker}``.
    - Sauvegarder le dump pseudo-brut (1 fichier par contrat et par run).
 4. Agréger les dumps pseudo-bruts en cache agrégé.
@@ -43,6 +44,8 @@ class FuturesFetcher(InstrumentFetcher):
         client: MassiveClient,
         force: bool = False,
         dry_run: bool = False,
+        start_date: date | None = None,
+        end_date: date | None = None,
     ) -> dict[str, object]:
         """Historise un produit futures via sa chaîne de contrats."""
         product_code = instrument.symbol
@@ -88,11 +91,16 @@ class FuturesFetcher(InstrumentFetcher):
             else (None, None)
         )
 
+        # Plage explicite (--start-date / --end-date) : remplace la plage auto.
+        explicit = start_date is not None
+        scan_start = start_date if start_date is not None else target_start
+        scan_end = (end_date or today) if explicit else today
+
         # 4. Segments à fetcher
-        segments = chain.continuous_segments(target_start, today)
+        segments = chain.continuous_segments(scan_start, scan_end)
         if not segments:
             logger.warning(
-                f"Aucun segment actif sur [{target_start}, {today}] pour {product_code}"
+                f"Aucun segment actif sur [{scan_start}, {scan_end}] pour {product_code}"
             )
             result["status"] = "no_segments"
             attach_coverage_fields(result, instrument, settings, resolution, today=today)
@@ -100,7 +108,8 @@ class FuturesFetcher(InstrumentFetcher):
 
         logger.info(
             f"{product_code}: {len(segments)} segment(s) à couvrir sur "
-            f"[{target_start}, {today}], historique existant: "
+            f"[{scan_start}, {scan_end}]{' (plage explicite)' if explicit else ''}, "
+            "historique existant: "
             f"{'oui' if has_existing else 'non'}"
             + (f" (oldest={oldest_date}, latest={latest_date})" if has_existing else "")
         )
@@ -109,7 +118,14 @@ class FuturesFetcher(InstrumentFetcher):
             logger.info(f"[dry-run] Plan de fetch pour {product_code}:")
             for seg in segments:
                 seg_start, seg_end = _determine_segment_range(
-                    seg, target_start, today, oldest_date, latest_date, settings
+                    seg,
+                    target_start,
+                    today,
+                    oldest_date,
+                    latest_date,
+                    settings,
+                    start_date=start_date,
+                    end_date=scan_end if explicit else None,
                 )
                 logger.info(f"  {seg.ticker}: range=[{seg_start}, {seg_end}]")
             result["status"] = "dry_run"
@@ -124,7 +140,7 @@ class FuturesFetcher(InstrumentFetcher):
         skipped_segments = 0
 
         for seg in segments:
-            if not force:
+            if not force and not explicit:
                 done_today, existing_run_ts = has_run_today(
                     instrument, settings, resolution=resolution, ticker=seg.ticker
                 )
@@ -137,7 +153,14 @@ class FuturesFetcher(InstrumentFetcher):
                     continue
 
             seg_start, seg_end = _determine_segment_range(
-                seg, target_start, today, oldest_date, latest_date, settings
+                seg,
+                target_start,
+                today,
+                oldest_date,
+                latest_date,
+                settings,
+                start_date=start_date,
+                end_date=scan_end if explicit else None,
             )
 
             if seg_start is None or seg_end is None:
@@ -208,25 +231,35 @@ def _determine_segment_range(
     oldest_date: date | None,
     latest_date: date | None,
     settings: Settings,
+    *,
+    start_date: date | None = None,
+    end_date: date | None = None,
 ) -> tuple[str | None, str | None]:
     """Détermine le range (gte, lte) à fetcher pour un segment de rollover.
 
     Trois cas :
-    1. **Premier run** (pas d'historique) : range = [max(target_start, active_from), min(today, active_until)].
-    2. **Run incrémental** (historique existant) : range = [latest_date - buffer, today] ∩ [active_from, active_until].
-    3. **Extension** (history_months augmenté) : si target_start < oldest_date, backfill arrière.
+    1. **Plage explicite** (``--start-date`` / ``--end-date``) :
+       range = [start_date, end_date or today] ∩ [active_from, active_until].
+    2. **Premier run** (pas d'historique) : range = [max(target_start, active_from), min(today, active_until)].
+    3. **Run incrémental** (historique existant) : range = [latest_date - buffer, today] ∩ [active_from, active_until].
+       Les segments entièrement antérieurs à ``latest_date - buffer`` sont donc
+       ignorés. Étendre l'historique en arrière (``history_months`` augmenté,
+       trou ancien) passe par une plage explicite ``fetch --start-date``.
 
     :return: Tuple (window_start_gte, window_start_lte) au format YYYY-MM-DD, ou (None, None).
     """
     seg_active_start = seg.active_from
     seg_active_end = seg.active_until
 
-    if oldest_date is None:
+    if start_date is not None:
+        cover_start = start_date
+        cover_end = end_date or today
+    elif oldest_date is None:
         cover_start = target_start
         cover_end = today
     else:
         cover_start = (
-            min(target_start, latest_date - timedelta(days=settings.overlap_buffer_days))
+            latest_date - timedelta(days=settings.overlap_buffer_days)
             if latest_date
             else target_start
         )

@@ -236,7 +236,7 @@ Flag racine : `myquantstore -v|--verbose <commande>` force le logging DEBUG (ove
 | `myquantstore schedule {install\|run\|status\|show\|uninstall} [fetch\|caches]` | Jobs périodiques : fetch (OHLCV sam. 07h) et caches (Massive sam. 03h) |
 | `myquantstore config` | Affiche la configuration résolue (clé masquée) + chemin du fichier |
 | `myquantstore status [--instrument ES] [--type futures] [--check]` | État par instrument ; `--check` exit 1 si STALE |
-| `myquantstore fetch [--instrument ES] [--type futures] [--timeframe all\|1min\|1day] [--force] [--dry-run] [--no-cascade]` | Historise les chandeliers OHLCV (défaut `--timeframe all` = 1min+1day) |
+| `myquantstore fetch [--instrument ES] [--type futures] [--timeframe all\|1min\|1day] [--start-date YYYY-MM-DD] [--end-date YYYY-MM-DD] [--force] [--dry-run] [--no-cascade]` | Historise les chandeliers OHLCV (défaut `--timeframe all` = 1min+1day). `--start-date/--end-date` : plage explicite (backfill) |
 | `myquantstore aggregate [--instrument ES] [--type futures] [--timeframe all\|1min\|1day] [--no-cascade]` | Régénère le cache agrégé (générique) |
 | `myquantstore query <instrument> [--type] [--start] [--end] [--timescale-unit min\|hour\|day\|week] [--timescale-nb K] [--intraday-begin HH:MM] [--intraday-end HH:MM] [--adjust] [--no-split] [--no-dedup-timestamps] [--forward-fill] [--normalize-tick-size] [--check-ticksize-accuracy] [--output] [--limit] [--include-cols] [--no-cascade]` | Interroge l'historique continu |
 | `myquantstore chart [instrument] [--type] [--port] [--host] [--mdns] [--timescale-unit] [--timescale-nb] [--nb-candle] [--intraday-begin] [--intraday-end] [--normalize-tick-size] [--no-split] [--adjust] [--forward-fill] [--no-cascade]` | Serveur de visualisation interactive |
@@ -310,6 +310,19 @@ s'il reste un trou confirmé — utilisable comme garde-fou après un `fetch`.
 myquantstore doctor gaps                                   # plage [chart] intraday_begin/end
 myquantstore doctor gaps --type futures --start 2026-09-01 --confirmed-only
 myquantstore doctor gaps -i NQ --intraday-begin 17:00 --intraday-end 04:00 --min-gap-minutes 30
+```
+
+**Combler un trou** une fois la donnée corrigée chez Massive : refetch de la plage avec
+`fetch --start-date / --end-date` (bornes en dates calendaires incluses ; prendre un jour de
+marge de chaque côté, sans risque grâce à la dédup), puis relancer `doctor gaps`. Le skip
+« dump du jour » ne s'applique pas à une plage explicite. Les barres manquantes sont
+ajoutées et celles de la plage remplacées par la version re-téléchargée ; rien n'est
+supprimé.
+
+```bash
+myquantstore fetch -i NQ --timeframe 1min --start-date 2026-03-09 --end-date 2026-03-13 --dry-run
+myquantstore fetch -i NQ --timeframe 1min --start-date 2026-03-09 --end-date 2026-03-13
+myquantstore doctor gaps -i NQ --start 2026-03-09 --end 2026-03-13
 ```
 
 Si les calendriers de marché sont historisés (`myquantstore calendar refresh`), un trou qui

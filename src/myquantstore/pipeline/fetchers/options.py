@@ -11,6 +11,8 @@ pour le type ``options``) sans implémenter la logique.
 
 from __future__ import annotations
 
+from datetime import date
+
 from myquantstore.api.client import MassiveClient
 from myquantstore.config import Settings
 from myquantstore.instruments import Instrument
@@ -30,6 +32,8 @@ class OptionsFetcher(InstrumentFetcher):
         client: MassiveClient,
         force: bool = False,
         dry_run: bool = False,
+        start_date: date | None = None,
+        end_date: date | None = None,
     ) -> dict[str, object]:
         raise NotImplementedError(
             f"Fetch des options non implémenté (scaffold). Instrument: {instrument.key}. "

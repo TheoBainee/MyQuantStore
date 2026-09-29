@@ -52,6 +52,8 @@ class YahooDailyFetcher(InstrumentFetcher):
         client: MassiveClient,
         force: bool = False,
         dry_run: bool = False,
+        start_date: date | None = None,
+        end_date: date | None = None,
     ) -> dict[str, object]:
         del client  # Yahoo only
         symbol = instrument.symbol
@@ -81,7 +83,7 @@ class YahooDailyFetcher(InstrumentFetcher):
         result["yahoo_ticker"] = y_ticker
         logger.info(f"=== yahoo daily {instrument.key} ({y_ticker}) ===")
 
-        if not force and not dry_run:
+        if not force and not dry_run and start_date is None:
             already, run_ts = has_run_today(instrument, settings, resolution=resolution)
             if already:
                 logger.warning(
@@ -101,9 +103,15 @@ class YahooDailyFetcher(InstrumentFetcher):
             else (None, None)
         )
 
-        # Horizon = max Yahoo au premier run ; incrémental ensuite
-        if oldest_date is None:
-            cover_start: date | None = None  # period=max
+        # Plage explicite (--start-date) ; sinon horizon = max Yahoo au premier
+        # run, incrémental ensuite
+        cover_start: date | None
+        if start_date is not None:
+            cover_start = start_date
+            cover_end = end_date or today
+            use_max = False
+        elif oldest_date is None:
+            cover_start = None  # period=max
             cover_end = today
             use_max = True
         else:

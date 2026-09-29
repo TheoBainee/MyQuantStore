@@ -14,7 +14,7 @@ def test_run_fetch_default_resolutions_dual(tmp_settings, monkeypatch):
     """resolutions=None → 1min + 1day (aligné CLI all)."""
     seen: list[str] = []
 
-    def fake_one(instrument, settings, client, resolution, *, force, dry_run):
+    def fake_one(instrument, settings, client, resolution, *, force, dry_run, start_date, end_date):
         seen.append(resolution)
         return {"status": "skipped", "instrument": str(instrument), "resolution": resolution}
 

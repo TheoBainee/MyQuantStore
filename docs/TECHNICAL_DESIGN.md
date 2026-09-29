@@ -452,6 +452,7 @@ Avant de lancer un produit, le `historian` vérifie s'il existe un dump avec `ru
 
 - **Si oui** : log `WARNING "Historisation déjà effectuée aujourd'hui (run_ts=20260711T...) — skip. Utilisez --force pour relancer."` et passe au produit suivant.
 - **Si `--force`** : relance quand même, crée un nouveau dump avec un `run_ts` plus précis (inclut l'heure pour garantir l'unicité).
+- **Si plage explicite** (`--start-date`) : pas de vérification (backfill volontaire, le skip sert au job périodique).
 
 ### 7.3 Détermination du range à fetcher
 
@@ -459,19 +460,21 @@ Pour chaque produit et chaque contrat de la chaîne de rollover :
 
 1. **Premier run** : range = `(today - history_months.<type>)` → `today`. Défaut 24 mois (plan Basic, 2 ans), **60 mois pour les indices**.
 
-2. **Runs suivants (incrémental)** : range = `(last_date_in_aggregate + 1ns - overlap_buffer_days)` → `today`. Le buffer de recouvrement (= 1 jour) garantit la continuité même en cas de candles manquants.
+2. **Runs suivants (incrémental)** : range = `(last_date_in_aggregate + 1ns - overlap_buffer_days)` → `today`. Le buffer de recouvrement (= 1 jour) garantit la continuité même en cas de candles manquants. Futures : intersection avec `[active_from, active_until]` de chaque contrat ; les contrats entièrement antérieurs au début du range ne sont pas re-téléchargés.
 
-3. **Extension d'historique** : si `history_months.<type>` est augmenté (ex: 24 → 60 après upgrade Developer), le `historian` détecte que la date la plus ancienne en Parquet est plus récente que `today - 60 mois` → lance un **backfill arrière** pour combler (`oldest_existing_date` → `today - 60 mois`). Pas de re-téléchargement de ce qui existe déjà.
+3. **Plage explicite** (`fetch --start-date YYYY-MM-DD [--end-date YYYY-MM-DD]`) : range = `start_date` → `end_date` (défaut `today`, date future ramenée à `today` ; `--end-date` seul refusé ; `start > end` refusé). Validée par `historian.resolve_fetch_date_range`, propagée `run_fetch` → `_fetch_one` → `InstrumentFetcher.fetch(start_date=, end_date=)`. Futures : `RolloverChain.continuous_segments(start, end)` puis intersection par contrat. Yahoo 1day : mode range (`date_from/date_to`), jamais `period=max`, events partiels ignorés (cache `yahoo_actions` intact). Usages : combler un trou corrigé chez Massive, **étendre l'historique** après hausse de `history_months.<type>` (pas d'extension arrière automatique).
+
+   Effet sur le stockage : un dump de plus (immuable) ; `aggregate()` rejoue tous les dumps, dédup `(window_start, ticker)` keep=last → les barres manquantes sont ajoutées, celles de la plage remplacées par la version re-téléchargée. Union sans suppression : une barre supprimée ou déplacée par la source reste dans l'agrégat. `latest` n'est pas modifié par un backfill passé → le run incrémental suivant est inchangé. `run_ts` est à la seconde : deux runs dans la même seconde écriraient le même fichier.
 
 ### 7.4 Pipeline d'exécution (`fetch`)
 
 ```
 Pour chaque product_code (NQ, ES, RTY, YM):
-    1. Vérifier "déjà fait aujourd'hui" -> WARNING + skip si oui (sauf --force)
+    1. Vérifier "déjà fait aujourd'hui" -> WARNING + skip si oui (sauf --force / --start-date)
     2. ContractsCache.get() -> contrats du produit (auto-refresh si périmé/absent via cascade)
     3. Construire RolloverChain à partir des contrats
     4. Pour chaque contrat actif sur la période cible:
-        a. Déterminer le range (premier run vs incrémental vs backfill extension)
+        a. Déterminer le range (premier run vs incrémental vs plage explicite)
         b. fetch_aggs(ticker, resolution=1min, gte, lte) -> DataFrame Polars
         c. Sauver dump pseudo-brut: data/raw/{product_code}/{ticker}/{run_ts}.parquet (+ sidecar .meta.json)
     5. aggregate(product_code) -> régénérer le cache agrégé (+ sidecar .meta.json)
@@ -998,7 +1001,7 @@ Flag racine : `-v` / `--verbose` (avant la sous-commande) force le logging DEBUG
 | `myquantstore config` | Affiche la config résolue (clé masquée) + chemin du fichier. | `--paths` (tous les chemins) |
 | `myquantstore config add` | Ajoute des tickers à `config.toml` (lookup type via cache). | `TICKER…`, `--type`, `--no-cascade` |
 | `myquantstore futures contracts` | Liste/rafraîchit le cache contrats futures. | `--symbol ES`, `--refresh`, `--active-only` |
-| `myquantstore fetch` | Historise les OHLCV (défaut `--timeframe all` = 1min Massive + 1day Yahoo). Futures : skip **par contrat** si dump du jour. Exit 1 si error/not_implemented. | `--instrument ES`, `--type`, `--timeframe all\|1min\|1day`, `--force`, `--dry-run`, `--no-cascade` |
+| `myquantstore fetch` | Historise les OHLCV (défaut `--timeframe all` = 1min Massive + 1day Yahoo). Futures : skip **par contrat** si dump du jour. Exit 1 si error/not_implemented. | `--instrument ES`, `--type`, `--timeframe all\|1min\|1day`, `--start-date`, `--end-date`, `--force`, `--dry-run`, `--no-cascade` |
 | `myquantstore aggregate` | Régénère le cache agrégé depuis dumps bruts. Auto-déclenche `fetch` si dumps manquants. | `--instrument ES`, `--type`, `--timeframe all\|1min\|1day`, `--no-cascade` |
 | `myquantstore query <instrument>` | Interroge l'historique continu. Auto-déclenche cascade type-aware si manquant. | `--start`, `--end`, `--timescale-unit min\|hour\|day\|week`, `--timescale-nb K`, `--intraday-begin/end`, `--adjust` (rollover futures / dividends stocks), `--no-split`, `--forward-fill`, `--normalize-tick-size` (**incompatible avec `--adjust`**), `--check-ticksize-accuracy`, `--output`, `--limit`, `--no-cascade` |
 | `myquantstore chart [product]` | Serveur visualisation : dashboard `/` ; avec arg ouvre `/{type}:{symbol}`. Cascade 1day pour miniatures si manquant. | `--port`, `--host`, `--mdns`, `--timescale-unit`, `--timescale-nb`, `--nb-candle`, `--intraday-begin`, `--intraday-end`, `--normalize-tick-size`, `--adjust`, `--no-split`, `--forward-fill`, `--no-cascade` |
@@ -1014,7 +1017,8 @@ Flag racine : `-v` / `--verbose` (avant la sous-commande) force le logging DEBUG
 ### 12.2 Comportements notables
 
 - `fetch --dry-run` : calcule et affiche pour chaque produit/contrat : plage à fetcher, nb pages estimées, cache hit/miss. N'appelle pas l'API ni n'écrit de fichiers. Idéal pour valider avant un backfill 2 ans.
-- `fetch` sans `--force` : si un dump daté d'aujourd'hui existe pour le produit → `WARNING` + skip (passe au suivant).
+- `fetch` sans `--force` : si un dump daté d'aujourd'hui existe pour le produit → `WARNING` + skip (passe au suivant). Pas de skip avec une plage explicite `--start-date`.
+- `fetch --start-date [--end-date]` : backfill de la plage (voir §7.3) ; combiner avec `--dry-run` pour voir les segments / bornes.
 - `query` sans `--start/--end` : retourne tout l'historique disponible.
 - `--no-cascade` : erreur explicite si prérequis manquant (pour automatisation/cron).
 - `status` affiche la `RolloverChain` (tableau `ticker / dates / rollover_date / tick_size`) pour chaque produit — voir §6.3.

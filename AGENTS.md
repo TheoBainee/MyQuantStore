@@ -33,8 +33,19 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
 
 ### Logique d'historisation
 1. **Premier run** : récupérer depuis (today - history_months.<type>).
-2. **Runs suivants** : depuis (dernière date agrégée - overlap_buffer_days).
-3. Extension arrière automatique si history_months est augmenté.
+2. **Runs suivants** : depuis (dernière date agrégée - overlap_buffer_days), **tous types**
+   (futures inclus : les contrats entièrement antérieurs sont ignorés, pas de re-fetch de
+   tout history_months).
+3. **Plage explicite** : `fetch --start-date YYYY-MM-DD [--end-date YYYY-MM-DD]` (bornes
+   incluses, fin par défaut = aujourd'hui, date future ramenée à aujourd'hui, `--end-date`
+   seul refusé). Remplace la plage auto et ignore le skip « dump du jour » (sans forcer le
+   refresh corporate actions, qui reste lié à `--force`). Futures : segments de roll calculés
+   sur la plage. Yahoo 1day : mode range (jamais `period=max`). Sert à combler un trou
+   (Massive corrigé) ou à étendre l'historique en arrière : **pas d'extension arrière
+   automatique** quand history_months augmente.
+   Le backfill écrit un dump de plus ; l'agrégat (dédup `(window_start, ticker)` keep=last)
+   ajoute les barres manquantes et remplace celles de la plage. Il n'efface rien : une barre
+   supprimée ou déplacée par Massive reste dans l'agrégat.
 4. À chaque exécution :
    - Sauvegarder un **dump pseudo-brut** (1 fichier par ticker + run_ts).
    - Mettre à jour l'agrégé.

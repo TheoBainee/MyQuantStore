@@ -12,6 +12,7 @@ Le retour est un dict de résultats par clé ``"{instrument_key}[{resolution}]"`
 
 from __future__ import annotations
 
+from datetime import date
 from typing import cast
 
 from myquantstore.api.client import MassiveClient
@@ -52,6 +53,34 @@ def resolve_fetch_resolutions(
     )
 
 
+def resolve_fetch_date_range(
+    start_date: date | None,
+    end_date: date | None,
+    today: date,
+) -> tuple[date | None, date | None]:
+    """Valide ``--start-date`` / ``--end-date`` → plage explicite ``(start, end)``.
+
+    - aucun des deux : ``(None, None)`` (plage automatique) ;
+    - ``start`` seul : ``end`` = ``today`` ;
+    - ``end`` seul : refusé (pas de borne basse implicite) ;
+    - ``end`` dans le futur : ramené à ``today`` (log warning) ;
+    - ``start > end`` : refusé.
+
+    :raises ValueError: Combinaison invalide.
+    """
+    if start_date is None and end_date is None:
+        return None, None
+    if start_date is None:
+        raise ValueError("--end-date requiert --start-date.")
+    end = end_date if end_date is not None else today
+    if end > today:
+        logger.warning(f"--end-date {end} dans le futur — ramenée à aujourd'hui ({today})")
+        end = today
+    if start_date > end:
+        raise ValueError(f"--start-date ({start_date}) postérieure à --end-date ({end}).")
+    return start_date, end
+
+
 def run_fetch(
     settings: Settings,
     client: MassiveClient,
@@ -59,6 +88,8 @@ def run_fetch(
     force: bool = False,
     dry_run: bool = False,
     resolutions: list[str] | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
 ) -> dict[str, dict[str, object]]:
     """Lance l'historisation pour un ou plusieurs instruments × résolutions.
 
@@ -69,6 +100,9 @@ def run_fetch(
     :param dry_run: Si True, calcule le plan sans appeler l'API ni écrire.
     :param resolutions: Résolutions à fetcher (défaut ``[1min, 1day]``, aligné
         CLI ``--timeframe all``). Cascade passe toujours une liste explicite.
+    :param start_date: Plage explicite (``--start-date``) déjà validée par
+        :func:`resolve_fetch_date_range`. ``None`` = plage automatique.
+    :param end_date: Borne de fin explicite (``--end-date``), inclusive.
     :return: Dictionnaire des résultats par clé ``instrument[resolution]``.
     """
     if instruments is None:
@@ -89,7 +123,14 @@ def run_fetch(
             key = f"{instrument.key}[{resolution}]"
             try:
                 result = _fetch_one(
-                    instrument, settings, client, resolution, force=force, dry_run=dry_run
+                    instrument,
+                    settings,
+                    client,
+                    resolution,
+                    force=force,
+                    dry_run=dry_run,
+                    start_date=start_date,
+                    end_date=end_date,
                 )
             except NotImplementedError as e:
                 logger.warning(f"{key} non implémenté: {e}")
@@ -126,6 +167,8 @@ def _fetch_one(
     *,
     force: bool,
     dry_run: bool,
+    start_date: date | None = None,
+    end_date: date | None = None,
 ) -> dict[str, object]:
     if resolution == RESOLUTION_1DAY:
         if instrument.type not in YAHOO_DAILY_TYPES:
@@ -136,11 +179,25 @@ def _fetch_one(
                 "error": f"1day Yahoo non supporté pour {instrument.type.value}",
             }
         return YahooDailyFetcher().fetch(
-            instrument, settings, client, force=force, dry_run=dry_run
+            instrument,
+            settings,
+            client,
+            force=force,
+            dry_run=dry_run,
+            start_date=start_date,
+            end_date=end_date,
         )
 
     if resolution != RESOLUTION_1MIN:
         raise ValueError(f"Résolution de fetch inconnue: {resolution}")
 
     fetcher = get_fetcher(instrument)
-    return fetcher.fetch(instrument, settings, client, force=force, dry_run=dry_run)
+    return fetcher.fetch(
+        instrument,
+        settings,
+        client,
+        force=force,
+        dry_run=dry_run,
+        start_date=start_date,
+        end_date=end_date,
+    )

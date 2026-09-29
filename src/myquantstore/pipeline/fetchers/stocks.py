@@ -17,7 +17,7 @@ Pas de RolloverChain (symbole unique, pas d'expiration) — la chaîne est une
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import polars as pl
 
@@ -45,6 +45,8 @@ class StocksFetcher(InstrumentFetcher):
         client: MassiveClient,
         force: bool = False,
         dry_run: bool = False,
+        start_date: date | None = None,
+        end_date: date | None = None,
     ) -> dict[str, object]:
         """Historise un stock via l'endpoint v2 (prix bruts adjusted=false)."""
         symbol = instrument.symbol
@@ -58,8 +60,8 @@ class StocksFetcher(InstrumentFetcher):
 
         resolution = RESOLUTION_1MIN
 
-        # 1. Vérifier "déjà fait aujourd'hui"
-        if not force and not dry_run:
+        # 1. Vérifier "déjà fait aujourd'hui" (contourné par une plage explicite)
+        if not force and not dry_run and start_date is None:
             already_done, existing_run_ts = has_run_today(
                 instrument, settings, resolution=resolution
             )
@@ -93,8 +95,11 @@ class StocksFetcher(InstrumentFetcher):
             else (None, None)
         )
 
-        # Premier run : [target_start, today] ; incrémental : [latest - buffer, today]
-        if oldest_date is None:
+        # Plage explicite : [start_date, end_date or today] ; premier run :
+        # [target_start, today] ; incrémental : [latest - buffer, today]
+        if start_date is not None:
+            cover_start = start_date
+        elif oldest_date is None:
             cover_start = target_start
         else:
             cover_start = (
@@ -102,7 +107,7 @@ class StocksFetcher(InstrumentFetcher):
                 if latest_date
                 else target_start
             )
-        cover_end = today
+        cover_end = (end_date or today) if start_date is not None else today
 
         if cover_start > cover_end:
             logger.warning(f"Rien à fetcher pour {symbol} (cover_start > cover_end)")
