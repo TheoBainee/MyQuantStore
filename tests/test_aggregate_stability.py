@@ -7,8 +7,8 @@ même ordre de lignes.
 
 Le jeu de données vise les cas à risque :
 
-- roll futures ESH5 → ESM5 le 2025-03-10 : les deux contrats ont une barre à
-  chaque ``window_start`` de la journée (fetch ``gte``/``lte`` inclusifs) ;
+- roll futures ESH5 → ESM5 (ESM5 actif le 2025-03-10) : les deux contrats ont une
+  barre à chaque ``window_start`` de ce jour (recouvrement du fetch) ;
 - refetch d'une même plage par un run ultérieur (dédup ``keep="last"``) ;
 - volume suffisant (plusieurs milliers de barres) pour que Polars parallélise
   les tris et ``unique`` — une instabilité de tri n'apparaît qu'à ce prix.
@@ -37,7 +37,8 @@ from myquantstore.storage.raw_dumps import save_raw_dump
 # systématique à ce volume, 5 tours la rendent certaine.
 _REPEATS = 5
 
-_ROLL_DAY = date(2025, 3, 10)
+# Premier jour d'ESM5 (active_from) ; jour de roll d'ESH5 = vendredi 07/03.
+_NEW_CONTRACT_DAY = date(2025, 3, 10)
 
 
 def _minute_bars(ticker: str, first: date, last: date, base: float) -> pl.DataFrame:
@@ -69,16 +70,16 @@ def _minute_bars(ticker: str, first: date, last: date, base: float) -> pl.DataFr
 
 
 def _seed_es_roll(settings, instrument: Instrument) -> None:
-    """ESH5 jusqu'au jour de roll inclus, ESM5 dès ce jour, + un refetch ESM5."""
+    """ESH5 fetché jusqu'à active_until inclus (recouvrement), ESM5 dès ce jour, + un refetch ESM5."""
     save_raw_dump(
-        _minute_bars("ESH5", date(2025, 3, 5), _ROLL_DAY, 5800.0),
+        _minute_bars("ESH5", date(2025, 3, 5), _NEW_CONTRACT_DAY, 5800.0),
         instrument,
         "ESH5",
         "20250310T220000",
         settings,
     )
     save_raw_dump(
-        _minute_bars("ESM5", _ROLL_DAY, date(2025, 3, 12), 5850.0),
+        _minute_bars("ESM5", _NEW_CONTRACT_DAY, date(2025, 3, 12), 5850.0),
         instrument,
         "ESM5",
         "20250312T220000",
@@ -180,15 +181,15 @@ class TestQueryStability:
             current = query(es, settings, chain=sample_chain, **kwargs)
             _assert_identical(reference, current, f"tour {i}")
 
-    def test_roll_day_keeps_new_contract_with_or_without_chain(self, es_roll, sample_chain):
-        """Au jour de roll, sans chaîne comme avec, le contrat le plus récent gagne."""
+    def test_new_contract_day_keeps_new_contract_with_or_without_chain(self, es_roll, sample_chain):
+        """Premier jour du nouveau contrat : sans chaîne comme avec, il gagne."""
         settings, es = es_roll
         aggregate(es, settings)
         for chain in (None, sample_chain):
             df = query(es, settings, chain=chain).with_columns(pl.col("ticker").cast(pl.Utf8))
-            roll_day = df.filter(pl.col("window_start").dt.date() == _ROLL_DAY)
-            assert roll_day.height > 0
-            assert roll_day["ticker"].unique().to_list() == ["ESM5"]
+            new_day = df.filter(pl.col("window_start").dt.date() == _NEW_CONTRACT_DAY)
+            assert new_day.height > 0
+            assert new_day["ticker"].unique().to_list() == ["ESM5"]
 
     def test_tickers_outside_chain_are_stable(self, tmp_settings, es_instrument):
         """Contrats absents de la chaîne (rang inconnu) : départage déterministe."""

@@ -63,7 +63,7 @@ class TestDetermineSegmentRange:
         gte, lte = _determine_segment_range(
             seg, date(2026, 1, 1), today, None, None, tmp_settings
         )
-        assert gte == "2026-08-22"
+        assert gte == "2026-08-21"  # veille : ouverture de la séance d'active_from
         assert lte == "2026-08-22"
 
     def test_empty_when_start_after_end(self, tmp_settings):

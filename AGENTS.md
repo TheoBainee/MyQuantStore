@@ -74,8 +74,8 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
 - Rollover : days_before_expiry (défaut 7) → rollover_date = last_trade_date - N jours = **dernier jour** du contrat courant ; le contrat suivant est actif à partir du jour ouvré suivant (`active_until`, exclusif). Ex. expiration ven. 18/09 → ven. 11/09 encore l'ancien, nouveau dès lun. 14/09.
 - Ex : contrat expire vendredi 19 → dernier jour conservé = vendredi 12.
 - RolloverChain + RolloverSegment pour active_contract, continuous_segments, tick_size.
-- Fetch 1min : `window_start.gte/lte` en `YYYY-MM-DD` inclusifs sur `active_from` / `active_until` (même date de roll) → recouvrement possible des deux contrats.
-- Pour query/chart : gaps naturels conservés **par défaut** ; timestamps dupliqués au roll **dédupliqués par défaut** (contrat actif à la date de la barre). `--no-dedup-timestamps` pour garder les deux. `--forward-fill` (opt-in) réinsère les barres manquantes intra-session / jours ouvrés (OHLC = last close).
+- Fetch 1min : `window_start.gte/lte` en `YYYY-MM-DD` inclusifs sur `active_from - 1 jour` / `active_until` : la séance d'`active_from` ouvre la veille au soir (dim. 17:00 CT pour un lundi) → recouvrement des deux contrats, tranché par `query()`.
+- Pour query/chart : gaps naturels conservés **par défaut** ; timestamps dupliqués au roll **dédupliqués par défaut** : seul le contrat actif à la date de **séance** (`session_end_date`) est gardé, même une barre seule à son timestamp → jour de roll = ancien contrat, séance suivante (dès l'ouverture du dimanche soir) = nouveau. Garde-fou : `tests/test_roll_boundary.py`. `--no-dedup-timestamps` pour garder les deux. `--forward-fill` (opt-in) réinsère les barres manquantes intra-session / jours ouvrés (OHLC = last close).
 
 ### Corporate actions (stocks)
 - **Massive 1min** : fetch `adjusted=false` → prix bruts ; cache `corporate_actions/`.

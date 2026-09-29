@@ -147,7 +147,8 @@ class TestDetermineSegmentRangeExplicit:
             start_date=date(2026, 2, 20),
             end_date=date(2026, 3, 13),
         )
-        assert (gte, lte) == ("2026-03-01", "2026-03-13")
+        # active_from dans la plage : départ la veille (ouverture du soir)
+        assert (gte, lte) == ("2026-02-28", "2026-03-13")
 
     def test_explicit_range_outside_segment_is_empty(self, tmp_settings):
         seg = self._seg(date(2026, 3, 1), date(2026, 6, 1))
@@ -225,6 +226,8 @@ class TestFuturesFetcherExplicitRange:
             lo = max(start, seg.active_from)
             hi = min(end, seg.active_until)
             if lo <= hi:
+                if lo == seg.active_from:
+                    lo -= timedelta(days=1)  # ouverture de séance la veille au soir
                 expected.append((seg.ticker, lo.isoformat(), hi.isoformat()))
         assert len(expected) >= 2  # la plage traverse un roll
 

@@ -27,7 +27,7 @@ Deux familles de timeframes / sources, **sans se croiser** pour reconstruire un 
 - **Ajustement split** pour stocks : stockage en prix **bruts** (`adjusted=false`) + ajustement à la query (toggle `--no-split`, splits ON par défaut via le cache `/stocks/v1/splits`).
 - Mise en cache intelligente : contrats futures (`/futures/v1/contracts`), corporate actions Massive (`/stocks/v1/splits` + `/dividends`) et `yahoo_actions/` (1day stocks), TTL commun configurable.
 - **Calendriers de marché historisés** (`myquantstore calendar`) : séances futures (`/futures/v1/schedules`) et fériés NYSE/NASDAQ (`/v1/marketstatus/upcoming`, pour stocks, forex et indices), stockés en dumps + agrégat car les fériés passés disparaissent de l'API ; `doctor gaps` s'en sert pour ne plus signaler fériés et clôtures anticipées.
-- Gestion automatique du **rollover** des contrats futures (J-7 avant expiration = dernier jour de l'ancien contrat, switch au jour ouvré suivant) via la `RolloverChain`.
+- Gestion automatique du **rollover** des contrats futures (J-7 avant expiration = dernier jour de l'ancien contrat, switch au jour ouvré suivant, dès l'ouverture de sa séance la veille au soir) via la `RolloverChain`.
 - **Cascade automatique** des dépendances (type-aware) : `query` déclenche `aggregate` → `fetch` → `contracts`/`splits` si nécessaire.
 - Normalisation des prix en **multiples entiers de tick size** (`Int32`) via `--normalize-tick-size` (futures).
 - Test de qualité des données via `--check-ticksize-accuracy` (bilan par ticker, futures).

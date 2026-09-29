@@ -36,7 +36,8 @@ au même ``window_start`` (deux ``ticker``) au jour de roll. ``query()``
 déduplique **par défaut** (``dedup_timestamps=True``) après les ajustements
 (Panama voit encore les deux contrats) et le bilan tick size. Si une
 ``RolloverChain`` est fournie, le contrat actif à la date de la barre gagne
-(segment ``[active_from, active_until)``), à défaut le plus récent de la chaîne ;
+(segment ``[active_from, active_until)``, date de séance), à défaut le plus récent
+de la chaîne ; les barres d'un contrat hors de son segment sont écartées ;
 sinon le contrat le plus récent (première barre la plus tardive dans l'agrégat),
 jamais l'ordre des lignes. ``--no-dedup-timestamps`` conserve les deux lignes.
 Le chart s'appuie sur ce défaut (plus de ``unique`` côté chart).
@@ -160,8 +161,8 @@ def query(
     :param k_days: Rééchantillonnage extraday en k jours (track ``1day``).
     :param week_aligned: Si True (UT ``week``), buckets ancrés lundi ISO.
     :param dedup_timestamps: Si True (défaut), une barre par ``window_start``
-        après ajustements. Au roll, le contrat le plus récent de ``chain``
-        gagne. False = conserver les deux tickers (contrat de l'agrégat).
+        après ajustements. Avec ``chain``, seul le contrat actif à la date de
+        séance est gardé ; sans chaîne, le contrat le plus récent gagne. False = conserver les deux tickers (contrat de l'agrégat).
     :param include_cols: Si fourni, ne conserve que ces colonnes (ordre conservé).
         Toute colonne absente lève ``ValueError``.
     :param forward_fill: Si True, réinsère les barres manquantes après
@@ -316,7 +317,10 @@ def _dedup_timestamps(
     Avec une chaîne à segments (futures), le contrat **actif** à la date de la
     barre gagne (``active_from <= date < active_until``, date = ``session_end_date``
     si présente, sinon date UTC de ``window_start``) ; à défaut (aucun des deux
-    actif), le contrat le plus récent de la chaîne.
+    actif), le contrat le plus récent de la chaîne. Dans la couverture de la
+    chaîne, les barres d'un contrat de la chaîne hors de son segment sont écartées,
+    même seules à leur timestamp : jour de roll = ancien contrat, séance suivante =
+    nouveau contrat.
     Sans chaîne (ou contrats hors chaîne), le contrat **le plus récent** gagne :
     première barre la plus tardive dans ``ticker_first_seen`` (agrégat complet ;
     à défaut ``df``), puis nom de ticker. Le choix ne dépend jamais de l'ordre
@@ -360,6 +364,17 @@ def _dedup_timestamps(
             .fill_null(False)
             .alias("_roll_active"),
             pl.col("_roll_rank").fill_null(-1),
+        )
+        # Seul le contrat actif de sa séance est gardé : une barre d'un contrat de la
+        # chaîne hors de son segment (recouvrement du fetch) est écartée même sans
+        # barre concurrente au même timestamp (ex. dimanche soir, séance du lundi).
+        chain_from = min(seg.active_from for seg in segments)
+        chain_until = max(seg.active_until for seg in segments)
+        df = df.filter(
+            pl.col("_roll_active")
+            | (pl.col("_roll_rank") < 0)
+            | (bar_date < chain_from)
+            | (bar_date >= chain_until)
         )
         sort_keys = ["window_start", "_roll_active", "_roll_rank", "_first_seen", "_roll_ticker"]
         helper_cols += ["_roll_rank", "_roll_from", "_roll_until", "_roll_active"]

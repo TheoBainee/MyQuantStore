@@ -246,6 +246,9 @@ def _determine_segment_range(
        ignorés. Étendre l'historique en arrière (``history_months`` augmenté,
        trou ancien) passe par une plage explicite ``fetch --start-date``.
 
+    Quand la plage démarre à ``active_from``, elle est avancée d'un jour
+    (ouverture de séance la veille au soir).
+
     :return: Tuple (window_start_gte, window_start_lte) au format YYYY-MM-DD, ou (None, None).
     """
     seg_active_start = seg.active_from
@@ -270,5 +273,11 @@ def _determine_segment_range(
 
     if range_start > range_end:
         return None, None
+
+    # La séance d'active_from ouvre la veille au soir (Globex 17:00 CT) : on démarre
+    # un jour calendaire plus tôt pour la récupérer en entier. Les barres de la veille
+    # hors segment sont écartées par query() (session_end_date hors segment).
+    if range_start == seg_active_start:
+        range_start = seg_active_start - timedelta(days=1)
 
     return range_start.isoformat(), range_end.isoformat()
