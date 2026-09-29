@@ -1096,7 +1096,7 @@ Le serveur est lancé via `uvicorn` (bloquant). Un seul serveur sert tous les pr
 | `GET /{product}` | HTML | Page du chart (template `chart.html` avec paramètres injectés + lien maison). 404 si product non configuré. |
 | `GET /static/{file}` | — | Fichiers statiques (JS embarqués + templates HTML) |
 | `GET /api/candles` | Arrow IPC | Chandeliers OHLCV en binaire (Polars `write_ipc` → apache-arrow JS `tableFromIPC`) |
-| `GET /api/meta` | JSON | Métadonnées : `tick_size`, `first_date`, `last_date`, `total_candles` |
+| `GET /api/meta` | JSON | Métadonnées : `tick_size`, `first_date`, `last_date`, `total_candles`, `contracts` (futures : contrats de la `RolloverChain` — `ticker`, `name`, `active_from`, `rollover_date`, `last_trade_date` en ISO ; `null` hors futures). Voir §12bis.9. |
 | `GET /api/thumbnail/{key}.svg` | SVG | Sparkline close 1day sur `thumbnail_lookback_days` (défaut 90). |
 | `GET /api/overlays` | JSON | Catalogue overlay du produit : `{overlays, facets, skipped}`, une ligne par `(stem, backtest_id)`. Voir §12bis.8. |
 | `GET /api/overlay/{stem}` | JSON | Payload d'un backtest (`?id=` = backtest_id ; défaut : le premier) : métadonnées + `transactions` + `orders`. |
@@ -1130,8 +1130,9 @@ Le frontend chart n'a besoin que de : `time`, OHLC, `volume`, `candle_count`. La
 | `open`/`high`/`low`/`close` | `Float64` | `double` | OK (pas de cast) |
 | `volume` | `Int32` (depuis aggregator) | `int32` | `Int64` → `BigInt` en JS, que Lightweight Charts n'accepte pas |
 | `candle_count` | `Int32` (si resamplé k > 1) | `int32` | OK |
+| `ticker` | `Categorical` (futures, UT min/hour uniquement) | `large_utf8` | Contrat par barre pour les rollovers (§12bis.9). Casté en `Utf8` + `write_ipc(compat_level=pl.CompatLevel.oldest())` : par défaut Polars écrit les chaînes en `string_view` (type 24), non supporté par apache-arrow JS 17.0.0. |
 
-**Colonnes éliminées** : `ticker`, `product_code`, `run_id` (type `Categorical` de Polars). Polars encode les `Categorical` en `dictionary<values=string_view>` en Arrow IPC, qui n'est pas supporté par apache-arrow JS 17.0.0 (erreur `"Unrecognized type: undefined (24)"`). Le chart n'en a pas besoin.
+**Colonnes éliminées** : `product_code`, `run_id` (type `Categorical` de Polars), et `ticker` hors futures intraday. Polars encode les `Categorical` en `dictionary<values=string_view>` en Arrow IPC, qui n'est pas supporté par apache-arrow JS 17.0.0 (erreur `"Unrecognized type: undefined (24)"`). Le chart n'en a pas besoin.
 
 **Timestamps uniques** : `query()` déduplique déjà les rolls (§9). `_prepare_chart_df()` ne refait pas de `unique` — le chart visualise ce que `query()` retourne (défaut = une barre par timestamp). Lightweight Charts exige des timestamps uniques ; le défaut de `query()` le garantit. Côté client, `dedupeCandlesByTime()` re-déduplique par `time` (garde la dernière) au parse et au prepend — un doublon ferait lever `Uncaught Error: Value is null` au rendu.
 
@@ -1162,7 +1163,7 @@ Templates HTML avec paramètres injectés par string replacement / JSON. Les JS 
 **Chart page** :
 - **Candlestick pane** (pane 0) : série `CandlestickSeries` avec couleurs up/down.
 - **Volume pane** (pane 1) : série `HistogramSeries` avec couleur conditionnelle (vert/rouge selon close >= open). Hauteur fixe 120px.
-- **Toolbar** : bouton maison → `/`, sélecteur d'UT (dropdown 1min→1w), bouton "Ajuster" (fit content), barre d'info (product, count, date range, UT).
+- **Toolbar** : bouton maison → `/`, sélecteur d'UT (dropdown 1min→1w), bouton "Ajuster" (fit content), case "Rolls" (futures, §12bis.9), barre d'info (product, count, date range, UT).
 - **Loading overlay** : `pointer-events: none` sur le chart pendant le chargement (évite les erreurs crosshair sur données vides).
 
 **Sélecteur d'UT** : le changement d'UT via le dropdown appelle `changeTimescale()` qui reset l'état (`allCandles = []`, `oldestTimestamp = null`, `noMoreData = false`) et relance `loadInitial()`. L'UT est sauvegardée dans `localStorage` (survit aux F5). `changeTimescale()` rappelle ensuite `renderOverlayList()` : les chips de relation UT du sélecteur d'overlay sont relatives à l'UT du graph et doivent être réévaluées (§12bis.8).
@@ -1256,6 +1257,35 @@ canvas consomme déjà des listes plates.
 
 **Rendu = calque pur** : sélectionner un overlay ne recharge pas les chandeliers et ne déplace
 pas la vue (pas de jump pan).
+
+### 12bis.9 Rollovers futures
+
+**Source de vérité = les barres affichées.** `/api/candles` expose la colonne `ticker` pour les
+futures en UT `min` / `hour` (track 1min ; le resample garde `ticker.first()` par bucket). Le front
+place un roll sur chaque barre dont le `ticker` diffère de celui de la barre précédente dans
+`allCandles` (recalcul dans `updateChart()`, donc aussi après lazy load et changement d'UT). Le roll
+tombe ainsi exactement sur la première barre du nouveau contrat telle que `query()` la sert (règle
+`rollover_date` = dernier jour de l'ancien contrat, nouveau dès l'ouverture de la séance suivante,
+dim. 17:00 CT pour Globex), sans recalculer d'horaires de séance côté client.
+
+**UT jour / semaine** : pas de rolls. Le track 1day futures est la série continue Yahoo (`=F`),
+sans contrat par barre, qui roule selon son propre calendrier. La case est grisée, avec une infobulle explicative.
+
+**Rendu** : `RolloverPrimitive`, primitive de série (`candleSeries.attachPrimitive`, API officielle
+LWC v5). Lightweight Charts n'a pas d'item natif « événement » : les series markers sont ancrés au
+prix (`aboveBar` / `belowBar` / `atPrice*`), pas au bas du pane, et servent déjà aux transactions
+d'overlay. La primitive fournit :
+- `paneViews` : pointillé vertical discret (`drawBackground`, sous les chandeliers) et icône ronde
+  en bas du pane prix (`draw`) ;
+- `timeAxisViews` : étiquette du nouveau contrat sur l'axe du temps (étiquettes qui se chevauchent
+  au dézoom masquées, l'icône reste) ;
+- `hitTest` : `externalId = roll:<index>`, repris via `param.hoveredObjectId` dans
+  `subscribeCrosshairMove` pour remplacer l'infobulle OHLCV par l'infobulle du roll : dernière
+  barre de l'ancien contrat, première du nouveau, dernier jour (`rollover_date`) et échéance
+  (`last_trade_date`) de l'ancien, nom du nouveau (`/api/meta.contracts`), écart close→open.
+
+**Case "Rolls"** (toolbar, futures uniquement) : cochée par défaut, persistée en `localStorage`
+(`myquantstore-show-rolls`). Couleur fixe `#FFB74D` (`ROLL_COLOR`).
 
 ---
 

@@ -21,6 +21,12 @@
         #toolbar a.home-btn:hover { background: #363a45; color: #fff; border-color: #2962ff; }
         #toolbar a.home-btn svg { display: block; }
         #toolbar .info { margin-left: auto; font-size: 12px; color: #787b86; }
+        #toolbar label.rolls-toggle { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }
+        #toolbar label.rolls-toggle[hidden] { display: none; }
+        #toolbar label.rolls-toggle.disabled { opacity: .45; cursor: default; }
+        #toolbar label.rolls-toggle input { accent-color: #FFB74D; cursor: inherit; }
+        #tooltip .tt-roll-head { color: #FFB74D; margin-bottom: 4px; }
+        #tooltip .tt-roll { display: grid; grid-template-columns: auto auto; gap: 2px 12px; }
         #chart { width: 100%; height: calc(100vh - 50px); position: relative; }
         #chart.loading { pointer-events: none; }
         #overlay-canvas {
@@ -137,6 +143,9 @@
             <option value="log">Log</option>
         </select>
         <button id="fit-btn">Ajuster</button>
+        <label class="rolls-toggle" id="rolls-toggle" hidden title="Afficher les rollovers de contrat">
+            <input type="checkbox" id="rolls-checkbox" checked> Rolls
+        </label>
         <div id="overlay-picker" hidden>
             <label for="overlay-trigger">Backtest:</label>
             <button id="overlay-trigger" type="button" aria-haspopup="listbox" aria-expanded="false">
@@ -250,6 +259,13 @@
         let overlayCanvas = null;
         let overlayCtx = null;
         let overlayDrawRaf = 0;
+        // Rollovers futures : un roll = première barre d'un nouveau ticker (données affichées).
+        const IS_FUTURES = PRODUCT.startsWith('futures:');
+        const ROLL_COLOR = '#FFB74D';
+        const ROLLS_KEY = 'myquantstore-show-rolls';
+        let rollPrimitive = null;
+        let rollList = [];                 // {time, prevTime, from, to, gap}
+        const contractsByTicker = new Map(); // ticker -> contrat (/api/meta)
 
         // --- Création du chart ---
         function createChart() {
@@ -292,6 +308,10 @@
                 borderVisible: false,
                 wickUpColor: CANDLE_UP, wickDownColor: CANDLE_DOWN,
             });
+            if (IS_FUTURES) {
+                rollPrimitive = new RolloverPrimitive();
+                candleSeries.attachPrimitive(rollPrimitive);
+            }
 
             // Pane 1 : volume (histogram)
             volumeSeries = chart.addSeries(LightweightCharts.HistogramSeries, {
@@ -361,7 +381,10 @@
                 const fmt = v => v.toFixed(2);
                 const fmtVol = v => v.toLocaleString();
 
-                tooltipEl.innerHTML =
+                const hovered = param.hoveredObjectId;
+                const roll = typeof hovered === 'string' && hovered.startsWith('roll:')
+                    ? rollList[parseInt(hovered.slice(5))] : null;
+                tooltipEl.innerHTML = roll ? rollTooltipHtml(roll) :
                     `<div class="tt-date">${dateStr}</div>` +
                     `<div class="tt-ohlcv">` +
                     `<span class="tt-label">O</span><span>${fmt(candle.open)}</span>` +
@@ -434,6 +457,7 @@
                     low: l,
                     close: c,
                     volume: colMap['volume'] ? colMap['volume'].get(i) : 0,
+                    ticker: colMap['ticker'] ? colMap['ticker'].get(i) : null,
                 });
             }
             if (skipped > 0) {
@@ -533,6 +557,7 @@
             }
             applyOverlayMarkers();
             scheduleOverlayCanvasDraw();
+            refreshRollovers();
         }
 
         // --- Barre d'info ---
@@ -586,6 +611,202 @@
         document.getElementById('scale-select').addEventListener('change', (e) => {
             applyPriceScaleMode(e.target.value);
         });
+
+        // --- Rollovers futures ---
+        // Primitive de série (API officielle LWC) : pointillé discret en fond, icône en bas
+        // du pane prix, étiquette du nouveau contrat sur l'axe du temps. LWC n'a pas d'item
+        // natif « événement » : les series markers sont ancrés au prix, pas au bas du pane.
+        const ROLL_ICON = 16;       // côté du badge (px CSS)
+        const ROLL_ICON_MARGIN = 4; // écart au bas du pane
+        const ROLL_LABEL_GAP = 56;  // espacement mini entre deux étiquettes d'axe
+
+        class RolloverPrimitive {
+            constructor() {
+                this._rolls = [];
+                this._points = [];     // {x, index}
+                this._axisViews = [];
+                this._visible = true;
+                this._chart = null;
+                this._requestUpdate = null;
+                this._paneHeight = 0;
+                const self = this;
+                this._paneView = {
+                    zOrder: () => 'top',
+                    renderer: () => ({
+                        drawBackground: (target) => self._draw(target, true),
+                        draw: (target) => self._draw(target, false),
+                    }),
+                };
+            }
+            attached({ chart, requestUpdate }) { this._chart = chart; this._requestUpdate = requestUpdate; }
+            detached() { this._chart = null; this._requestUpdate = null; }
+            setRolls(rolls) { this._rolls = rolls; this._requestUpdate?.(); }
+            setVisible(v) { this._visible = v; this._requestUpdate?.(); }
+            updateAllViews() {
+                this._points = [];
+                this._axisViews = [];
+                if (!this._chart || !this._visible) return;
+                const ts = this._chart.timeScale();
+                let lastLabelX = -Infinity;
+                this._rolls.forEach((r, index) => {
+                    const x = ts.timeToCoordinate(r.time);
+                    if (x === null) return;
+                    this._points.push({ x, index });
+                    // Étiquettes qui se chevauchent au dézoom : on garde la première.
+                    if (x - lastLabelX < ROLL_LABEL_GAP) return;
+                    lastLabelX = x;
+                    this._axisViews.push({
+                        coordinate: () => x,
+                        text: () => r.to,
+                        textColor: () => '#131722',
+                        backColor: () => ROLL_COLOR,
+                        visible: () => true,
+                        tickVisible: () => true,
+                    });
+                });
+            }
+            paneViews() { return this._visible ? [this._paneView] : []; }
+            timeAxisViews() { return this._visible ? this._axisViews : []; }
+            hitTest(x, y) {
+                if (!this._visible || !this._paneHeight) return null;
+                const top = this._paneHeight - ROLL_ICON_MARGIN - ROLL_ICON;
+                if (y < top - 2 || y > top + ROLL_ICON + 2) return null;
+                for (const p of this._points) {
+                    if (Math.abs(x - p.x) <= ROLL_ICON / 2 + 2) {
+                        return { externalId: `roll:${p.index}`, zOrder: 'top', cursorStyle: 'pointer' };
+                    }
+                }
+                return null;
+            }
+            _draw(target, background) {
+                target.useMediaCoordinateSpace(({ context: ctx, mediaSize }) => {
+                    const h = mediaSize.height;
+                    this._paneHeight = h;
+                    const top = h - ROLL_ICON_MARGIN - ROLL_ICON;
+                    for (const p of this._points) {
+                        const x = Math.round(p.x) + 0.5;
+                        if (background) {
+                            ctx.save();
+                            ctx.strokeStyle = hexToRgba(ROLL_COLOR, 0.35);
+                            ctx.lineWidth = 1;
+                            ctx.setLineDash([4, 4]);
+                            ctx.beginPath();
+                            ctx.moveTo(x, 0);
+                            ctx.lineTo(x, top);
+                            ctx.stroke();
+                            ctx.restore();
+                        } else {
+                            drawRollIcon(ctx, x, top + ROLL_ICON / 2);
+                        }
+                    }
+                });
+            }
+        }
+
+        /** Badge rond + flèche circulaire (roll) centré en (cx, cy). */
+        function drawRollIcon(ctx, cx, cy) {
+            const r = ROLL_ICON / 2;
+            ctx.save();
+            ctx.fillStyle = '#131722';
+            ctx.strokeStyle = ROLL_COLOR;
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.arc(cx, cy, r - 0.75, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+            // Flèche circulaire
+            const a0 = -Math.PI * 0.35, a1 = Math.PI * 1.25, ar = r * 0.48;
+            ctx.lineWidth = 1.4;
+            ctx.beginPath();
+            ctx.arc(cx, cy, ar, a0, a1);
+            ctx.stroke();
+            const ex = cx + ar * Math.cos(a0), ey = cy + ar * Math.sin(a0);
+            ctx.fillStyle = ROLL_COLOR;
+            ctx.beginPath();
+            ctx.moveTo(ex + 2.6, ey - 0.4);
+            ctx.lineTo(ex - 0.9, ey - 2.6);
+            ctx.lineTo(ex - 0.4, ey + 1.8);
+            ctx.closePath();
+            ctx.fill();
+            ctx.restore();
+        }
+
+        /** Rolls = changements de ticker entre barres consécutives (UT intraday uniquement). */
+        function computeRollovers() {
+            const out = [];
+            for (let i = 1; i < allCandles.length; i++) {
+                const prev = allCandles[i - 1], cur = allCandles[i];
+                if (prev.ticker && cur.ticker && prev.ticker !== cur.ticker) {
+                    out.push({
+                        time: cur.time, prevTime: prev.time,
+                        from: prev.ticker, to: cur.ticker,
+                        gap: cur.open - prev.close,
+                    });
+                }
+            }
+            return out;
+        }
+
+        function rollsAvailable() {
+            // Track 1day futures = série continue Yahoo, sans contrat par barre.
+            return currentTimescale.unit === 'min' || currentTimescale.unit === 'hour';
+        }
+
+        function refreshRollovers() {
+            if (!rollPrimitive) return;
+            rollList = computeRollovers();
+            rollPrimitive.setRolls(rollList);
+            syncRollsToggle();
+        }
+
+        function syncRollsToggle() {
+            const label = document.getElementById('rolls-toggle');
+            const box = document.getElementById('rolls-checkbox');
+            const available = rollsAvailable();
+            label.classList.toggle('disabled', !available);
+            box.disabled = !available;
+            label.title = available
+                ? 'Afficher les rollovers de contrat'
+                : 'UT jour/semaine : série continue Yahoo, sans contrat par barre — rolls indisponibles';
+            rollPrimitive?.setVisible(available && box.checked);
+        }
+
+        function rollTooltipHtml(roll) {
+            const fromC = contractsByTicker.get(roll.from);
+            const toC = contractsByTicker.get(roll.to);
+            const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+            const row = (k, v) => `<span class="tt-label">${k}</span><span>${esc(v)}</span>`;
+            const gap = `${roll.gap >= 0 ? '+' : ''}${roll.gap.toFixed(2)}`;
+            let html = `<div class="tt-roll-head">Roll ${esc(roll.from)} → ${esc(roll.to)}</div><div class="tt-roll">`;
+            html += row('Dernière barre', `${roll.from} · ${formatInTz(roll.prevTime)}`);
+            html += row('Première barre', `${roll.to} · ${formatInTz(roll.time)}`);
+            if (fromC) {
+                html += row('Dernier jour', `${fromC.rollover_date} (${roll.from})`);
+                html += row('Échéance', `${fromC.last_trade_date} (${roll.from})`);
+            }
+            if (toC?.name) html += row('Nouveau', toC.name);
+            html += row('Écart close→open', gap);
+            return html + '</div>';
+        }
+
+        async function initRollovers() {
+            if (!IS_FUTURES) return;
+            const box = document.getElementById('rolls-checkbox');
+            box.checked = localStorage.getItem(ROLLS_KEY) !== 'false';
+            box.addEventListener('change', () => {
+                localStorage.setItem(ROLLS_KEY, box.checked ? 'true' : 'false');
+                syncRollsToggle();
+            });
+            document.getElementById('rolls-toggle').hidden = false;
+            syncRollsToggle();
+            try {
+                const resp = await fetch(`/api/meta?product=${encodeURIComponent(PRODUCT)}`);
+                const meta = resp.ok ? await resp.json() : {};
+                for (const c of meta.contracts || []) contractsByTicker.set(c.ticker, c);
+            } catch {
+                // Infobulle sans dates de contrat : les rolls restent affichés.
+            }
+        }
 
         // --- Overlay backtests ---
         function toUnix(iso) {
@@ -1241,6 +1462,7 @@
             document.getElementById('timescale-select').value = savedTimescale;
         }
 
+        initRollovers();
         loadInitial().then(() => initOverlays());
     </script>
 </body>

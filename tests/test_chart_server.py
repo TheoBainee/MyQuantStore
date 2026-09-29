@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 
@@ -635,3 +635,103 @@ class TestChainHotReload:
             bump_ns=2_000_000_000,
         )
         assert client.get("/api/meta?product=futures:ES").json()["tick_size"] == 0.5
+
+
+def _seed_roll_1min(es_instrument, settings) -> datetime:
+    """ESM5 → ESU5 : rollover_date ven. 06/06/2025 (échéance 13/06, N=7).
+
+    Le vendredi, les deux contrats cotent (dédup → ESM5) ; ESU5 seul à partir de la
+    séance du lun. 09/06, ouverte le dim. 08/06 17:00 CT (22:00 UTC, heure d'été).
+    Retourne l'instant attendu de la première barre ESU5.
+    """
+    # Heures pleines : l'UT 1h drope les buckets partiels de fin de séance.
+    friday = [datetime(2025, 6, 6, 19, m, tzinfo=UTC) for m in range(60)]
+    sunday = [datetime(2025, 6, 8, 22, m, tzinfo=UTC) for m in range(60)]
+    for ticker, ts, sessions, base in (
+        ("ESM5", friday, [date(2025, 6, 6)] * 60, 5900.0),
+        ("ESU5", friday + sunday, [date(2025, 6, 6)] * 60 + [date(2025, 6, 9)] * 60, 5950.0),
+    ):
+        df = _make_ohlcv_df(ticker, ts, [base + i for i in range(len(ts))]).with_columns(
+            pl.Series("session_end_date", sessions, dtype=pl.Date)
+        )
+        save_raw_dump(df, es_instrument, ticker, "20260711T183000", settings, resolution="1min")
+    aggregate(es_instrument, settings, resolution="1min")
+    return sunday[0]
+
+
+class TestChartRollovers:
+    """Rollovers futures : ticker par barre (intraday) + contrats de la chaîne (meta)."""
+
+    @pytest.fixture
+    def roll_client(self, tmp_settings, es_instrument, sample_chain):
+        first_new = _seed_roll_1min(es_instrument, tmp_settings)
+        _seed_1day(es_instrument, tmp_settings, base=5900.0)
+        app = create_chart_app(
+            tmp_settings,
+            {es_instrument.key: es_instrument},
+            {es_instrument.key: sample_chain},
+            ChartDefaults(default_product=es_instrument.key),
+        )
+        return TestClient(app), first_new
+
+    @staticmethod
+    def _candles(client, unit: str, nb: int) -> pl.DataFrame:
+        resp = client.get(
+            f"/api/candles?product=futures:ES&timescale_unit={unit}&timescale_nb={nb}&limit=500"
+        )
+        assert resp.status_code == 200
+        return pl.read_ipc(BytesIO(resp.content))
+
+    @staticmethod
+    def _first_bar_of(df: pl.DataFrame, ticker: str) -> datetime:
+        return df.filter(pl.col("ticker") == ticker)["time"].min().replace(tzinfo=UTC)
+
+    def test_1min_ticker_utf8_et_roll_a_l_ouverture_du_dimanche(self, roll_client):
+        client, first_new = roll_client
+        df = self._candles(client, "min", 1)
+        assert df.schema["ticker"] == pl.Utf8
+        # Jour de roll = ancien contrat uniquement (dédup), nouveau dès dim. 17:00 CT.
+        assert df["ticker"].to_list() == ["ESM5"] * 60 + ["ESU5"] * 60
+        assert self._first_bar_of(df, "ESU5") == first_new
+
+    def test_ticker_ipc_lisible_par_apache_arrow_js(self, roll_client):
+        """apache-arrow JS 17 ne lit pas string_view (type 24) : ticker doit être large_string."""
+        import pyarrow as pa
+        import pyarrow.ipc as ipc
+
+        client, _ = roll_client
+        resp = client.get("/api/candles?product=futures:ES&timescale_unit=min&timescale_nb=1")
+        schema = ipc.open_file(pa.BufferReader(resp.content)).schema
+        assert schema.field("ticker").type == pa.large_string()
+
+    def test_ut_resamplee_garde_le_ticker(self, roll_client):
+        client, first_new = roll_client
+        df = self._candles(client, "hour", 1)
+        assert df["ticker"].to_list() == ["ESM5", "ESU5"]
+        assert self._first_bar_of(df, "ESU5") == first_new
+
+    def test_track_1day_sans_ticker(self, roll_client):
+        """Track 1day futures = série continue Yahoo : pas de contrat par barre."""
+        client, _ = roll_client
+        assert "ticker" not in self._candles(client, "day", 1).columns
+
+    def test_stocks_sans_ticker(self, multi_chart_setup):
+        settings, instruments, chains, defaults = multi_chart_setup
+        client = TestClient(create_chart_app(settings, instruments, chains, defaults))
+        resp = client.get("/api/candles?product=stocks:AAPL&timescale_unit=day&timescale_nb=1")
+        assert "ticker" not in pl.read_ipc(BytesIO(resp.content)).columns
+        assert client.get("/api/meta?product=stocks:AAPL").json()["contracts"] is None
+
+    def test_meta_expose_les_contrats_de_la_chaine(self, roll_client):
+        client, _ = roll_client
+        contracts = client.get("/api/meta?product=futures:ES").json()["contracts"]
+        esm5 = next(c for c in contracts if c["ticker"] == "ESM5")
+        assert esm5 == {
+            "ticker": "ESM5",
+            "name": esm5["name"],
+            "active_from": esm5["active_from"],
+            "rollover_date": "2025-06-06",
+            "last_trade_date": "2025-06-13",
+        }
+        esu5 = next(c for c in contracts if c["ticker"] == "ESU5")
+        assert esu5["active_from"] == "2025-06-09"

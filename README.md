@@ -411,6 +411,7 @@ myquantstore chart --mdns --host 0.0.0.0
 - **Zoom/pan** : roulette de la souris = zoom axe temps, drag = pan horizontal. Cap de zoom configurable (`max_visible_candles` dans la config).
 - **Buffer progressif** : chargement initial de `buffer_multiplier × max_visible_candles` candles, puis fetch progressif au fur et à mesure du pan vers la gauche (lazy loading horizontal via `before` param). Le fetch se déclenche uniquement quand moins de 250 candles restent avant le bord gauche de la vue ; un flag `noMoreData` coupe les requêtes quand l'historique est épuisé (évite les boucles sur buckets partiels).
 - **Sélecteur d'UT** : dropdown dans la toolbar (1min → 4h, 1day/2day/1week).
+- **Rollovers futures** : case « Rolls » dans la toolbar (cochée par défaut). Chaque roll est marqué sur la première barre du nouveau contrat : icône en bas du pane prix, pointillé discret, étiquette du nouveau ticker sur l'axe du temps. Le survol de l'icône affiche l'ancien et le nouveau contrat, le dernier jour, l'échéance et l'écart close→open. UT intraday uniquement : en UT jour/semaine, la série est la continue Yahoo, sans contrat par barre.
 - **Multi-instrument** : `localhost:8050/futures:ES`, `localhost:8050/stocks:AAPL`, etc. Un seul serveur sert tous les instruments configurés (indexés par clé `type:symbol`).
 - **Format de transfert** : Arrow IPC (binaire, ~3x plus compact que JSON).
 - **mDNS** : `--mdns` pour la découverte réseau local (accessible depuis tablette/autre poste).

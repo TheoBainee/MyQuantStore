@@ -249,6 +249,10 @@ def create_chart_app(
             # candle_count après resample, ou pour marquer les barres synthétiques (--forward-fill)
             if resampled or defaults.forward_fill:
                 wanted.append("candle_count")
+            # Futures intraday : contrat par barre → le front place les rollovers
+            # (le track 1day futures est la série continue Yahoo, sans contrat).
+            if instrument.type == InstrumentType.FUTURES and resolution == "1min":
+                wanted.append("ticker")
             df = _query_chart_ohlcv(
                 instrument,
                 settings,
@@ -271,7 +275,9 @@ def create_chart_app(
 
         chart_df = _prepare_chart_df(df)
         buffer = BytesIO()
-        chart_df.write_ipc(buffer)
+        # compat_level oldest : chaînes (ticker) en LargeUtf8 ; apache-arrow JS 17 ne lit pas
+        # le Utf8View émis par défaut par Polars.
+        chart_df.write_ipc(buffer, compat_level=pl.CompatLevel.oldest())
         logger.debug(
             f"API /candles: product={product} res={resolution} k_min={k_minutes} "
             f"k_days={k_days} limit={limit} before={before} after={after} -> {chart_df.height} candles, "
@@ -306,6 +312,7 @@ def create_chart_app(
         chain = _chain_for(product)
 
         tick_size: float | None = None
+        contracts: list[dict[str, Any]] | None = None
         if chain is not None and instrument.type == InstrumentType.FUTURES:
             from datetime import UTC
             from datetime import datetime as _dt
@@ -313,6 +320,7 @@ def create_chart_app(
             active_ticker = chain.active_contract(_dt.now(UTC).date())
             if active_ticker:
                 tick_size = chain.tick_size_for_ticker(active_ticker)
+            contracts = _chain_contracts(chain)
 
         from myquantstore.storage.aggregate_cache import read_aggregate
 
@@ -327,10 +335,17 @@ def create_chart_app(
                     "tick_size": tick_size,
                     "first_date": None,
                     "last_date": None,
+                    "contracts": contracts,
                 }
 
         if df.is_empty():
-            return {"product": product, "tick_size": tick_size, "first_date": None, "last_date": None}
+            return {
+                "product": product,
+                "tick_size": tick_size,
+                "first_date": None,
+                "last_date": None,
+                "contracts": contracts,
+            }
 
         from datetime import datetime as _dt2
 
@@ -345,6 +360,7 @@ def create_chart_app(
             "first_date": first_date,
             "last_date": last_date,
             "total_candles": df.height,
+            "contracts": contracts,
         }
 
     @app.get("/api/overlays")
@@ -459,6 +475,27 @@ class ChartDefaults:
         self.timezone = timezone or "UTC"
 
 
+def _chain_contracts(chain: InstrumentChain) -> list[dict[str, Any]] | None:
+    """Contrats de la chaîne de roll, pour l'infobulle des rollovers du chart.
+
+    Dates ISO (``YYYY-MM-DD``) : ``rollover_date`` = dernier jour du contrat,
+    ``active_from`` = première séance où il est le front-month.
+    """
+    segments = getattr(chain, "segments", None)
+    if segments is None:
+        return None
+    return [
+        {
+            "ticker": seg.ticker,
+            "name": seg.name,
+            "active_from": seg.active_from.isoformat(),
+            "rollover_date": seg.rollover_date.isoformat(),
+            "last_trade_date": seg.last_trade_date.isoformat(),
+        }
+        for seg in segments
+    ]
+
+
 def _contracts_mtime(instrument: Instrument, settings: Settings) -> int | None:
     """``mtime_ns`` du cache contrats d'un futures, ou None s'il est absent."""
     try:
@@ -562,6 +599,9 @@ def _prepare_chart_df(df: pl.DataFrame) -> pl.DataFrame:
         select_exprs.append(pl.col("volume").cast(pl.Float64))
     if "candle_count" in df.columns:
         select_exprs.append(pl.col("candle_count").cast(pl.Int32))
+    if "ticker" in df.columns:
+        # Utf8 et non Categorical (dictionnaire non lu par apache-arrow JS).
+        select_exprs.append(pl.col("ticker").cast(pl.Utf8))
 
     # query() déduplique déjà les timestamps de roll (défaut).
     return work.select(select_exprs).sort("time")
