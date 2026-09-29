@@ -6,12 +6,15 @@ lundi 14/09. La séance CME du 14/09 ouvre le **dimanche 13/09 à 17:00 CT**
 (22:00 UTC en heure d'été) : ces barres appartiennent déjà au nouveau contrat.
 
 Les dumps simulent les bornes réelles du fetch (``_determine_segment_range``),
-dates API interprétées comme jours UTC inclusifs.
+dates API interprétées comme jours UTC inclusifs. Fuseau de référence :
+America/Chicago ; la règle est vérifiée dans ce fuseau et en UTC, en heure
+d'été (roll de septembre, CDT) comme d'hiver (roll de décembre, CST).
 """
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 import polars as pl
 import pytest
@@ -25,41 +28,44 @@ from myquantstore.storage.raw_dumps import save_raw_dump
 _ROLL_DAY = date(2026, 9, 11)  # dernier jour de l'ancien contrat
 _NEXT_SESSION = date(2026, 9, 14)  # premier jour du nouveau contrat
 _TODAY = date(2026, 9, 16)
+_CHICAGO = ZoneInfo("America/Chicago")
 
 
-def _contracts() -> pl.DataFrame:
+def _contracts(tickers: list[str], expiries: list[date]) -> pl.DataFrame:
     return pl.DataFrame(
         {
-            "ticker": ["ESU6", "ESZ6"],
-            "first_trade_date": [date(2025, 6, 20), date(2025, 9, 19)],
-            "last_trade_date": [date(2026, 9, 18), date(2026, 12, 18)],
-            "settlement_date": [date(2026, 9, 18), date(2026, 12, 18)],
-            "trade_tick_size": [0.25, 0.25],
-            "name": ["E-mini S&P 500 Sep 2026", "E-mini S&P 500 Dec 2026"],
-            "type": ["single", "single"],
-            "product_code": ["ES", "ES"],
-            "active": [True, True],
+            "ticker": tickers,
+            "first_trade_date": [d - timedelta(days=455) for d in expiries],
+            "last_trade_date": expiries,
+            "settlement_date": expiries,
+            "trade_tick_size": [0.25] * len(tickers),
+            "name": tickers,
+            "type": ["single"] * len(tickers),
+            "product_code": ["ES"] * len(tickers),
+            "active": [True] * len(tickers),
         }
     )
 
 
 def _cme_session_bars(ticker: str, gte: date, lte: date, price: float) -> pl.DataFrame:
-    """Barres 1min CME (heure d'été) sur les jours UTC [gte, lte].
+    """Barres 1min CME sur les jours UTC [gte, lte], heure d'été comme d'hiver.
 
-    Séance D : D-1 22:00 UTC → D 21:00 UTC, ``session_end_date`` = D ; pause
-    quotidienne 21:00-22:00 UTC ; fermé du vendredi 21:00 au dimanche 22:00 UTC.
+    Séance D : D-1 17:00 CT → D 16:00 CT, ``session_end_date`` = D ; pause
+    quotidienne 16:00-17:00 CT ; fermé du vendredi 16:00 au dimanche 17:00 CT.
     """
     rows: list[tuple[datetime, date]] = []
-    current = datetime.combine(gte, datetime.min.time(), UTC)
-    stop = datetime.combine(lte + timedelta(days=1), datetime.min.time(), UTC)
+    current = datetime.combine(gte, time(0), UTC)
+    stop = datetime.combine(lte + timedelta(days=1), time(0), UTC)
     while current < stop:
-        session = (current + timedelta(hours=2)).date()
-        weekend = (
-            (current.weekday() == 4 and current.hour >= 21)
-            or current.weekday() == 5
-            or (current.weekday() == 6 and current.hour < 22)
+        local = current.astimezone(_CHICAGO)
+        closed = (
+            local.hour == 16
+            or local.weekday() == 5
+            or (local.weekday() == 4 and local.hour >= 16)
+            or (local.weekday() == 6 and local.hour < 17)
         )
-        if current.hour != 21 and not weekend and session.weekday() < 5:
+        if not closed:
+            session = local.date() + timedelta(days=1) if local.hour >= 17 else local.date()
             rows.append((current, session))
         current += timedelta(minutes=1)
     n = len(rows)
@@ -83,7 +89,9 @@ def _cme_session_bars(ticker: str, gte: date, lte: date, price: float) -> pl.Dat
 
 @pytest.fixture
 def chain() -> RolloverChain:
-    return RolloverChain("ES", _contracts(), days_before_expiry=7)
+    return RolloverChain(
+        "ES", _contracts(["ESU6", "ESZ6"], [date(2026, 9, 18), date(2026, 12, 18)]), 7
+    )
 
 
 @pytest.fixture
@@ -152,3 +160,77 @@ class TestRollQuery:
         settings, es = roll_aggregate
         by_session = _tickers_by_session(query(es, settings, chain=chain, dedup_timestamps=False))
         assert by_session[_NEXT_SESSION] == ["ESU6", "ESZ6"]
+
+
+# Rolls de référence : (tickers, expirations, début du fetch, today, rollover_date, 1er jour).
+_ROLLS = {
+    "sept_CDT": (
+        ["ESU6", "ESZ6"],
+        [date(2026, 9, 18), date(2026, 12, 18)],
+        date(2026, 9, 9),
+        date(2026, 9, 16),
+        date(2026, 9, 11),
+        date(2026, 9, 14),
+    ),
+    "dec_CST": (
+        ["ESZ6", "ESH7"],
+        [date(2026, 12, 18), date(2027, 3, 19)],
+        date(2026, 12, 9),
+        date(2026, 12, 16),
+        date(2026, 12, 11),
+        date(2026, 12, 14),
+    ),
+}
+
+
+@pytest.mark.parametrize("timezone", ["America/Chicago", "UTC"])
+@pytest.mark.parametrize("roll", _ROLLS.values(), ids=_ROLLS.keys())
+class TestRollTimezone:
+    """Fuseau de sortie et DST sans effet : la règle suit la date de séance CME."""
+
+    def _setup(self, tmp_settings, es_instrument, roll):
+        tickers, expiries, start, today, roll_day, next_session = roll
+        chain = RolloverChain("ES", _contracts(tickers, expiries), days_before_expiry=7)
+        for seg, price in zip(chain.segments, [1.0, 2.0], strict=True):
+            gte, lte = _determine_segment_range(seg, start, today, None, None, tmp_settings)
+            assert gte is not None and lte is not None
+            bars = _cme_session_bars(
+                seg.ticker, date.fromisoformat(gte), date.fromisoformat(lte), price
+            )
+            save_raw_dump(bars, es_instrument, seg.ticker, "20260101T000000", tmp_settings)
+        aggregate(es_instrument, tmp_settings)
+        assert chain.segments[0].rollover_date == roll_day
+        assert chain.segments[1].active_from == next_session
+        return chain, roll_day, next_session
+
+    def test_wall_clock_boundaries(self, tmp_settings, es_instrument, roll, timezone):
+        chain, roll_day, next_session = self._setup(tmp_settings, es_instrument, roll)
+        df = query(es_instrument, tmp_settings, chain=chain, timezone=timezone)
+        local = df.with_columns(pl.col("window_start").dt.convert_time_zone("America/Chicago"))
+        old = local.filter(pl.col("close") == 1.0)["window_start"]
+        new = local.filter(pl.col("close") == 2.0)["window_start"]
+        # Dernière barre de l'ancien : vendredi 15:59 CT ; 1re du nouveau : dimanche 17:00 CT.
+        assert old.max().replace(tzinfo=None) == datetime.combine(roll_day, time(15, 59))
+        sunday = next_session - timedelta(days=1)
+        assert new.min().replace(tzinfo=None) == datetime.combine(sunday, time(17, 0))
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"k_minutes": 5},
+            {"k_minutes": 60},
+            {"k_minutes": 5, "intraday_begin": time(8, 30), "intraday_end": time(15, 15)},
+        ],
+        ids=["5min", "1hour", "intraday_5min"],
+    )
+    def test_resampled_bars_follow_session(
+        self, tmp_settings, es_instrument, roll, timezone, kwargs
+    ):
+        chain, roll_day, next_session = self._setup(tmp_settings, es_instrument, roll)
+        df = query(es_instrument, tmp_settings, chain=chain, timezone=timezone, **kwargs)
+        assert df.height > 0
+        wrong = df.filter(
+            ((pl.col("session_end_date") <= roll_day) & (pl.col("close") != 1.0))
+            | ((pl.col("session_end_date") >= next_session) & (pl.col("close") != 2.0))
+        )
+        assert wrong.is_empty()
