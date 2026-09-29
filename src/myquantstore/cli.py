@@ -7,6 +7,8 @@ Commandes disponibles :
 - ``myquantstore doctor`` : diagnostic install / config / chemins.
   ``doctor overlays`` : validation du dossier overlays contre le contrat meta.json v2.
   ``doctor gaps`` : audit des trous de données 1min (plage intraday, confirmation croisée).
+  ``doctor stability`` : ré-agrège les dumps réels (dossier temporaire) et vérifie que
+  l'agrégat et les réponses query ne changent pas.
 - ``myquantstore setup-key`` : clé API Massive dans ``~/.config/myquantstore/.env``.
 - ``myquantstore schedule`` : jobs périodiques fetch (OHLCV) et caches (Massive).
 - ``myquantstore config`` : affiche la config résolue (clé masquée) + chemin du fichier.
@@ -533,6 +535,58 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-calendar",
         action="store_true",
         help="Ignore le calendrier de marché (fériés et clôtures anticipées non expliqués)",
+    )
+    p_doctor_stability = doctor_sub.add_parser(
+        "stability",
+        help="Vérifie que ré-agréger les dumps réels ne change jamais la réponse de query",
+        description=(
+            "Reconstruit l'agrégat --repeats fois depuis les dumps réels, dans un dossier\n"
+            "temporaire, et compare strictement (valeurs, dtypes, ordre des lignes) l'agrégat\n"
+            "et un jeu de variantes query (1min, sans dédup, 5min, 1h, forward fill ; 1day,\n"
+            "5 jours, semaine). Futures : avec la chaîne du cache contrats local et sans chaîne.\n"
+            "Signale aussi un agrégat sur disque périmé (WARN, non bloquant).\n"
+            "Lecture seule : data/raw et data/aggregate ne sont jamais écrits, aucun appel réseau.\n"
+            "Exit 1 si une instabilité (ou une variante en erreur) est détectée."
+        ),
+        epilog=(
+            "Exemples:\n"
+            "  myquantstore doctor stability\n"
+            "  myquantstore doctor stability -i ES --timeframe 1min --repeats 5\n"
+            "  myquantstore doctor stability --type futures --start 2026-09-01"
+        ),
+        formatter_class=_HELP_FMT,
+    )
+    _add_instrument_filter(p_doctor_stability)
+    p_doctor_stability.add_argument(
+        "--timeframe",
+        default="all",
+        metavar="TF",
+        help="Résolution(s) de stockage à vérifier : 1min | 1day | all (défaut: all)",
+    )
+    p_doctor_stability.add_argument(
+        "--repeats",
+        type=int,
+        default=3,
+        metavar="N",
+        help="Nombre de reconstructions comparées, >= 2 (défaut: 3)",
+    )
+    p_doctor_stability.add_argument(
+        "--start",
+        default=None,
+        metavar="DATE",
+        help="Début des variantes query (YYYY-MM-DD ou ISO). La reconstruction couvre tout",
+    )
+    p_doctor_stability.add_argument(
+        "--end",
+        default=None,
+        metavar="DATE",
+        help="Fin des variantes query, incluse (YYYY-MM-DD = fin de journée)",
+    )
+    p_doctor_stability.add_argument(
+        "--timezone",
+        default=None,
+        metavar="IANA",
+        help="Fuseau des variantes query (défaut: resolve_timezone = [chart] timezone)",
     )
 
     # --- setup-key ---
@@ -2225,12 +2279,117 @@ def _short_list(items: list[str], limit: int = 10) -> str:
     return ", ".join(items[:limit]) + ("…" if len(items) > limit else "")
 
 
+def _cmd_doctor_stability(args: argparse.Namespace) -> int:
+    """``doctor stability`` : ré-agrège les dumps réels (dossier temporaire) et compare."""
+    from myquantstore.instruments import InstrumentType
+    from myquantstore.pipeline.historian import resolve_fetch_resolutions
+    from myquantstore.query.reader import parse_query_datetime
+    from myquantstore.query.timezone import resolve_timezone
+    from myquantstore.serve.server import _local_chain
+    from myquantstore.storage.raw_dumps import raw_dumps_exist
+    from myquantstore.storage.stability import DISK_MISSING, DISK_STALE, check_stability
+
+    try:
+        settings = load_settings()
+    except FileNotFoundError as exc:
+        console.print(f"[red]Erreur:[/red] {exc}")
+        console.print("[dim]Lancez `myquantstore init` pour créer la configuration.[/dim]")
+        return 1
+
+    if args.repeats < 2:
+        console.print("[red]Erreur:[/red] --repeats doit être >= 2")
+        return 1
+    try:
+        targets = _resolve_instruments(settings, args.instrument, args.type)
+        resolutions = resolve_fetch_resolutions(settings, args.timeframe)
+        start = parse_query_datetime(args.start) if args.start else None
+        end = parse_query_datetime(args.end, is_end=True) if args.end else None
+        tz = resolve_timezone(settings, override=args.timezone)
+    except ValueError as exc:
+        console.print(f"[red]Erreur:[/red] {exc}")
+        return 1
+
+    pairs = [
+        (inst, res)
+        for inst in targets
+        for res in resolutions
+        if raw_dumps_exist(inst, settings, resolution=res)
+    ]
+    console.print("[bold]== doctor stability ==[/bold]")
+    console.print(
+        f"  {args.repeats} reconstructions (dossier temporaire, data/ intact) · fuseau {tz}"
+        + (f" · query {args.start or '…'} → {args.end or '…'}" if start or end else "")
+    )
+    if not pairs:
+        console.print("[yellow]Aucun dump pour la sélection — rien à vérifier.[/yellow]")
+        return 0
+
+    table = Table(show_header=True, header_style="bold")
+    for col in ("Instrument", "Résolution", "Lignes", "Agrégat", "Query", "Disque"):
+        table.add_column(col)
+    reports = []
+    for inst, res in pairs:
+        chain = _local_chain(inst, settings) if inst.type == InstrumentType.FUTURES else None
+        with console.status(f"{inst.key} [{res}] : {args.repeats} reconstructions…"):
+            report = check_stability(
+                inst, settings, res, chain, repeats=args.repeats, start=start, end=end, timezone=tz
+            )
+        reports.append(report)
+        n_variants = len(report.variants)
+        unstable = report.unstable_variants
+        if report.errors:
+            query_cell = f"[red]{len(report.errors)} en erreur[/red]"
+        elif unstable:
+            query_cell = f"[red]{len(unstable)}/{n_variants} instables[/red]"
+        else:
+            query_cell = f"[green]{n_variants}/{n_variants} stables[/green]"
+        disk_cell = {
+            DISK_STALE: "[yellow]périmé[/yellow]",
+            DISK_MISSING: "[dim]absent[/dim]",
+        }.get(report.disk_status, "[green]identique[/green]")
+        table.add_row(
+            inst.key,
+            res,
+            f"{report.rows:,}".replace(",", " "),
+            "[green]stable[/green]" if report.aggregate_stable else "[red]INSTABLE[/red]",
+            query_cell,
+            disk_cell,
+        )
+    console.print(table)
+
+    for report in reports:
+        label = f"{report.instrument.key} [{report.resolution}]"
+        for div in report.divergences:
+            console.print(
+                f"  [red]INSTABLE[/red] {label} · {div.step} · reconstruction "
+                f"{div.rebuild} : {div.detail}"
+            )
+        for name, error in report.errors.items():
+            console.print(f"  [red]ERREUR[/red] {label} · {name} : {error}")
+        if report.disk_status == DISK_STALE:
+            console.print(
+                f"  [yellow]WARN[/yellow] {label} · agrégat sur disque périmé, "
+                f"disque → reconstruit : {report.disk_detail}. Relancer `myquantstore aggregate`"
+            )
+
+    failed = [r for r in reports if not r.ok]
+    if failed:
+        console.print(
+            f"[red]{len(failed)} instrument(s) × résolution instable(s) ou en erreur.[/red]"
+        )
+        return 1
+    console.print("[green]Stable : ré-agréger ne change ni l'agrégat ni les réponses query.[/green]")
+    return 0
+
+
 def _cmd_doctor(args: argparse.Namespace) -> int:
-    """Commande ``doctor`` : diagnostic install, ``doctor overlays`` ou ``doctor gaps``."""
+    """Commande ``doctor`` : diagnostic install, ``doctor overlays|gaps|stability``."""
     if getattr(args, "doctor_command", None) == "overlays":
         return _cmd_doctor_overlays(args)
     if getattr(args, "doctor_command", None) == "gaps":
         return _cmd_doctor_gaps(args)
+    if getattr(args, "doctor_command", None) == "stability":
+        return _cmd_doctor_stability(args)
 
     from myquantstore.onboarding import run_doctor
 

@@ -231,6 +231,7 @@ Flag racine : `myquantstore -v|--verbose <commande>` force le logging DEBUG (ove
 |---|---|
 | `myquantstore init [--minimal\|--full] [-k KEY]` | Bootstrap XDG (config + dirs + clé optionnelle) |
 | `myquantstore doctor [--ping]` | Diagnostic install / config / chemins (exit 1 si bloquant) |
+| `myquantstore doctor stability [--instrument ES] [--type futures] [--timeframe 1min\|1day\|all] [--repeats N] [--start] [--end] [--timezone IANA]` | Ré-agrège les dumps réels (dossier temporaire, `data/` intact) et vérifie que l'agrégat et les réponses `query` ne changent pas ; exit 1 si instable |
 | `myquantstore doctor gaps [--instrument NQ] [--type futures] [--intraday-begin HH:MM] [--intraday-end HH:MM] [--timezone IANA] [--min-gap-minutes N] [--start] [--end] [--confirmed-only] [--no-calendar]` | Audit des trous de données 1min ; exit 1 si un trou est confirmé par un autre instrument et non expliqué par le calendrier de marché |
 | `myquantstore setup-key [-k KEY] [-y]` | Configure la clé API dans `~/.config/myquantstore/.env` |
 | `myquantstore schedule {install\|run\|status\|show\|uninstall} [fetch\|caches]` | Jobs périodiques : fetch (OHLCV sam. 07h) et caches (Massive sam. 03h) |
@@ -332,6 +333,28 @@ aucune barre sont répartis entre fermés selon le calendrier, séance prévue m
 barre (⚠, vrai trou) et hors calendrier. Le forex n'a pas de calendrier propre chez
 Massive : ses trous restent jugés par la seule confirmation croisée. `--no-calendar`
 ignore le calendrier.
+
+### Stabilité aggregate → query (`myquantstore doctor stability`)
+
+Vérifie sur tes données réelles qu'à dumps constants, relancer `aggregate` ne change jamais
+la réponse de `query`. Pour chaque instrument × résolution qui a des dumps, l'agrégat est
+reconstruit `--repeats` fois (défaut 3) dans un dossier temporaire, puis l'agrégat et un jeu
+de variantes `query` (1min, sans dédup, 5min, 1h, forward fill ; 1day, 5 jours, semaine) sont
+comparés strictement : valeurs, types et ordre des lignes. Pour les futures, les variantes
+tournent avec la chaîne du cache contrats local et sans chaîne.
+
+```bash
+myquantstore doctor stability                                   # tous les instruments, 1min + 1day
+myquantstore doctor stability -i ES --timeframe 1min --repeats 5
+myquantstore doctor stability --type futures --start 2026-09-01  # query plus courtes
+```
+
+Lecture seule : `data/raw` et `data/aggregate` ne sont jamais écrits, aucun appel réseau.
+Chaque reconstruction relit tous les dumps : compter environ `--repeats` fois la durée d'un
+`aggregate`. `--start` / `--end` ne raccourcissent que la phase `query`. Exit 1 si une
+instabilité ou une variante en erreur est détectée, avec la première divergence (variante,
+nombre de lignes, premier `window_start`, colonnes). Un agrégat sur disque différent de la
+reconstruction est signalé en WARN (non bloquant) : relancer `myquantstore aggregate`.
 
 ### Calendriers de marché (`myquantstore calendar`)
 
