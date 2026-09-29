@@ -784,7 +784,7 @@ Polars `group_by_dynamic` ancre la grille à l'epoch (1970-01-01), pas au début
 
 2. **Bucket** : pour chaque candle, `bucket_id = floor((window_start - anchor) / k)` ; le timestamp du bucket (`window_start`) = `anchor + bucket_id * k`.
 
-3. **Agrégation** : `group_by([session_end_date, window_start])` avec `open=first, high=max, low=min, close=last, volume=sum, transactions=sum, dollar_volume=sum`. La colonne `candle_count` compte le nombre de candles 1min agrégés dans chaque bucket.
+3. **Agrégation** : `group_by([session_end_date, window_start])` avec `open=first, high=max, low=min, close=last, volume=sum, transactions=sum, dollar_volume=sum`. La colonne `candle_count` compte le nombre de candles 1min agrégés dans chaque bucket. Les jointures d'ancre ne garantissant pas l'ordre des lignes, l'entrée est **triée `(window_start, ticker)` juste avant le `group_by`** : `open` / `close` sont toujours la première / dernière barre chronologique du bucket. Sortie triée `(window_start, session_end_date)` (clé totale). Même règle pour le resample extraday et le forward fill (tri total avant `forward_fill`). Sans ce tri, `open`, `close`, `ticker` et `settlement_price` d'un bucket variaient d'un appel à l'autre sur une machine multi-cœur (constaté par `doctor stability` : agrégat stable, variantes resamplées instables).
 
 4. **Drop des partiels de fin** : un bucket est partiel si `window_start + k > session_end`. On drop ces buckets pour garantir que tous les buckets font exactement k minutes.
 
@@ -861,6 +861,7 @@ def ensure_aggregate(product_code: str, client: MassiveClient, settings: Setting
 
 Toutes les commandes avec dépendances acceptent `--no-cascade` :
 - Si prérequis manquant → **erreur explicite** (pas d'auto-cascade).
+- `query --no-cascade` construit la chaîne **sans réseau** via `chains.build_local_chain` (cache contrats local même périmé, comme `serve`) ; sans cache contrats, note + roll départagé sans chaîne.
 - Usage : cron/CI où on veut un échec clair plutôt qu'un backfill silencieux de 2 ans.
 
 ### 10.5 `myquantstore status` avant cascade
@@ -1333,6 +1334,7 @@ tickers d'agrégat, le contrat courant et sa maturité (cache local). Réponse d
 | `test_aggregator.py` | Fusion 2 dumps chevauchants, dédup `(window_start, ticker)` keep=last, tri, cast Categorical, cast `volume`/`transactions` en `Int32` |
 | `test_aggregate_stability.py` | Ré-agrégation ×5 à dumps constants (roll ESH5→ESM5 + refetch, ~7k barres) : agrégat et `query()` (avec / sans chaîne, resample, forward fill, intraday, 1day) et `/v1/query` strictement identiques ; contrat le plus récent au roll sans chaîne |
 | `test_doctor_stability.py` | `doctor stability` : données stables → exit 0 (10/10 variantes futures) ; `data/` inchangé octet pour octet et mtime ; agrégateur instable simulé (ordre mélangé) → exit 1 + divergence localisée ; agrégat disque périmé → WARN sans exit 1 ; `--repeats < 2` / `--timeframe` invalide ; fenêtre `--start`/`--end` transmise aux query ; variantes stocks `no_split` |
+| `test_query_determinism.py` | `query()` rend la même réponse quand la sortie de chaque `join` / `unique` Polars est mélangée (1min, sans dédup, 5min, 1h, forward fill, intraday, `--adjust`, `--normalize-tick-size`, avec / sans chaîne ; split stocks) ; parité `/v1/query` = `query()` direct = CLI `query --no-cascade --output` (UT, intraday, forward fill, dédup, fenêtre, fuseau) ; CLI `--no-cascade` sur cache contrats périmé ou absent |
 | `test_roll_boundary.py` | ESU6 → ESZ6 (exp. 18/09/2026, J-7) aux bornes réelles du fetch : ven. 11/09 = ancien contrat, séance du 14/09 = nouveau dès dim. 17:00 CT ; barre de l'ancien contrat seule sur la séance suivante écartée ; `dedup_timestamps=False` = brut ; rolls de septembre (CDT) et décembre (CST) en sortie America/Chicago et UTC, 1min / 5min / 1h / intraday : dernière barre de l'ancien ven. 15:59 CT, première du nouveau dim. 17:00 CT |
 | `test_rollover.py` | Expiration vendredi 19 → dernier jour conservé vendredi 12 ; lundi suivant = nouveau contrat ; `continuous_segments` correct ; `tick_size_for_ticker` ; `to_table()` |
 | `test_stocks_fetch.py` / `test_v2_single_fetch.py` / `test_yahoo_api.py` | Fetchers multi-type + Yahoo daily (ranges, skip jour, reverse split) |

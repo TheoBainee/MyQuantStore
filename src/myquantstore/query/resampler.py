@@ -164,6 +164,17 @@ def filter_intraday(
     return df.filter(mask)
 
 
+def _bar_order(df: pl.DataFrame) -> list[str]:
+    """Clés de tri **totales** d'une série de barres : ``window_start`` puis ``ticker``.
+
+    Les jointures et ``unique`` Polars ne garantissent pas l'ordre des lignes (il
+    peut changer d'un appel à l'autre selon les threads). Toute étape qui dépend
+    de l'ordre (``first`` / ``last`` d'un ``group_by``, ``forward_fill``) trie
+    d'abord sur ces clés ; sans ``ticker``, ``window_start`` est unique.
+    """
+    return ["window_start", "ticker"] if "ticker" in df.columns else ["window_start"]
+
+
 def resample_ohlcv(
     df: pl.DataFrame,
     k_minutes: int,
@@ -238,6 +249,10 @@ def resample_ohlcv(
         )
         df = df.join(anchors, on="session_end_date")
 
+    # Les jointures ci-dessus ne préservent pas l'ordre : open=first / close=last
+    # exigent un tri chronologique explicite avant le group_by.
+    df = df.sort(_bar_order(df))
+
     # --- 2. Calculer bucket_id puis réécrire window_start = début du bucket ---
     df = df.with_columns(
         ((pl.col("window_start") - pl.col("anchor")).dt.total_minutes() // k_minutes)
@@ -291,8 +306,8 @@ def resample_ohlcv(
     # Cast candle_count en Int32 (cohérent avec les autres colonnes entières)
     agg = agg.with_columns(pl.col("candle_count").cast(pl.Int32))
 
-    # Trier par window_start (chronologique)
-    agg = agg.sort("window_start")
+    # Tri total (clé du group_by) : deux sessions peuvent partager un window_start
+    agg = agg.sort(["window_start", "session_end_date"])
 
     logger.info(
         f"Resampling terminé: {agg.height} buckets {k_minutes}min "
@@ -344,7 +359,7 @@ def resample_extraday(
     label = f"{k_days // 7}week" if week_aligned else f"{k_days}day"
     logger.info(f"Resampling extraday 1day -> {label}")
 
-    work = df.sort("window_start")
+    work = df.sort(_bar_order(df))
     if "session_end_date" not in work.columns:
         work = work.with_columns(pl.col("window_start").dt.date().alias("session_end_date"))
 
@@ -523,7 +538,7 @@ def _forward_fill_extraday(
     week_aligned: bool,
 ) -> pl.DataFrame:
     """Grille jours ouvrés (k=1) ou pas calendaire k_days (week_aligned = lundi ISO)."""
-    work = df.sort("window_start")
+    work = df.sort(_bar_order(df))
     first = work["window_start"].min()
     last = work["window_start"].max()
     if first is None or last is None:
@@ -561,7 +576,11 @@ def _join_and_fill(observed: pl.DataFrame, grid: pl.DataFrame) -> pl.DataFrame:
 
     # Ne jamais dropper une barre réelle (ex: séance week-end déjà présente).
     keys = pl.concat([grid.select(join_keys), observed.select(join_keys)]).unique()
-    out = keys.join(observed, on=join_keys, how="left").sort("window_start")
+    # Tri total avant forward_fill (jointure / unique sans ordre garanti)
+    order = ["window_start", *[k for k in join_keys if k != "window_start"]]
+    if "ticker" in observed.columns:
+        order.append("ticker")
+    out = keys.join(observed, on=join_keys, how="left").sort(order, nulls_last=True)
     out = out.with_columns(pl.col("close").is_null().alias("_ffill_missing"))
 
     fill_exprs: list[pl.Expr] = [pl.col("close").forward_fill().alias("close")]
@@ -604,4 +623,4 @@ def _join_and_fill(observed: pl.DataFrame, grid: pl.DataFrame) -> pl.DataFrame:
     out = out.filter(pl.col("close").is_not_null()).drop("_ffill_missing")
     if n_filled > 0:
         logger.info(f"Forward-fill : {n_filled} barre(s) synthétique(s) (OHLC = last close)")
-    return out.sort("window_start")
+    return out.sort(order, nulls_last=True)

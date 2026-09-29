@@ -267,7 +267,7 @@ forex/indices :                              fetch → aggregate → query
 options : NotImplemented
 ```
 
-Utiliser `--no-cascade` pour désactiver l'auto-cascade (erreur explicite si prérequis manquant — utile pour cron/CI).
+Utiliser `--no-cascade` pour désactiver l'auto-cascade (erreur explicite si prérequis manquant — utile pour cron/CI). `query --no-cascade` lit le cache contrats local sans réseau, même périmé, exactement comme `serve` : à paramètres égaux, la CLI et `/v1/query` renvoient le même résultat.
 
 ### Resampling et filtrage intraday (`query --timescale-unit` / `--timescale-nb` / `--intraday-begin` / `--intraday-end`)
 
@@ -354,7 +354,8 @@ Chaque reconstruction relit tous les dumps : compter environ `--repeats` fois la
 `aggregate`. `--start` / `--end` ne raccourcissent que la phase `query`. Exit 1 si une
 instabilité ou une variante en erreur est détectée, avec la première divergence (variante,
 nombre de lignes, premier `window_start`, colonnes). Un agrégat sur disque différent de la
-reconstruction est signalé en WARN (non bloquant) : relancer `myquantstore aggregate`.
+reconstruction est signalé en WARN (non bloquant) : relancer `myquantstore aggregate`. Si l'agrégat
+est stable mais pas les variantes `query`, le rapport l'attribue à `query()` lui-même.
 
 ### Calendriers de marché (`myquantstore calendar`)
 

@@ -19,7 +19,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
 
-from myquantstore.chains import InstrumentChain, build_chain
+from myquantstore.chains import InstrumentChain, build_local_chain
 from myquantstore.config import Settings
 from myquantstore.instruments import Instrument, InstrumentType
 from myquantstore.logging_setup import get_logger
@@ -286,32 +286,7 @@ def _parse_intraday(begin: str | None, end: str | None) -> tuple[time | None, ti
 
 def _local_chain(instrument: Instrument, settings: Settings) -> InstrumentChain | None:
     """Construit une chaîne **sans réseau**. Cache contrats périmé = lecture locale."""
-    if instrument.type == InstrumentType.FUTURES:
-        from myquantstore.contracts.cache import ContractsCache
-        from myquantstore.storage.parquet_io import read_parquet
-
-        cache = ContractsCache(instrument.symbol, settings)
-        if not cache.exists:
-            logger.debug(f"Pas de cache contrats local pour {instrument.key}")
-            return None
-        try:
-            contracts_df = read_parquet(cache.parquet_path)
-        except FileNotFoundError:
-            return None
-        try:
-            return build_chain(
-                instrument,
-                contracts_df=contracts_df,
-                days_before_expiry=settings.days_before_expiry,
-            )
-        except Exception as exc:
-            logger.warning(f"Chaîne locale {instrument.key} échouée: {exc}")
-            return None
-    try:
-        return build_chain(instrument)
-    except Exception as exc:
-        logger.warning(f"Chaîne locale {instrument.key} échouée: {exc}")
-        return None
+    return build_local_chain(instrument, settings)
 
 
 def _health_payload(health: InstrumentHealth) -> dict[str, Any]:

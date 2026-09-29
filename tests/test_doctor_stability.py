@@ -82,6 +82,24 @@ class TestDoctorStabilityCli:
         assert "agrégat · reconstruction 2" in out
         assert "ligne(s) diffèrent" in out
 
+    def test_query_only_instability_is_attributed_to_query(self, seeded, monkeypatch, capsys):
+        import myquantstore.storage.stability as stability_module
+
+        original = stability_module.query
+        calls = {"n": 0}
+
+        def unstable_query(*args, **kwargs):
+            calls["n"] += 1
+            df = original(*args, **kwargs)
+            return df.sample(fraction=1.0, shuffle=True, seed=calls["n"])
+
+        monkeypatch.setattr(stability_module, "query", unstable_query)
+        rc = main(["doctor", "stability", "-i", "ES", "--timeframe", "1min", "--timezone", TZ])
+        out = capsys.readouterr().out
+        assert rc == 1
+        assert "stable" in out and "10/10 instables" in out
+        assert "l'écart vient de query()" in out
+
     def test_stale_aggregate_on_disk_is_warn_not_failure(self, seeded, es_instrument, capsys):
         save_raw_dump(
             _minute_bars("ESM5", date(2025, 3, 13), date(2025, 3, 13), 5860.0),

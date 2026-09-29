@@ -34,6 +34,20 @@ logger = get_logger("adjust")
 _PRICE_COLS = ["open", "high", "low", "close"]
 
 
+def _left_join_keep_order(df: pl.DataFrame, right: pl.DataFrame, on: str) -> pl.DataFrame:
+    """Jointure gauche qui conserve l'ordre des lignes de ``df``.
+
+    L'ordre de sortie d'un ``join`` Polars n'est pas garanti (il peut varier d'un
+    appel à l'autre) ; on le restaure via un index de ligne.
+    """
+    return (
+        df.with_row_index("_join_row")
+        .join(right, on=on, how="left")
+        .sort("_join_row")
+        .drop("_join_row")
+    )
+
+
 def _split_factor_by_candle_date(
     candle_dates: pl.Series,
     splits: pl.DataFrame,
@@ -120,7 +134,9 @@ def _scale_prices_by_split_factor(
     df = df.with_columns(pl.col("window_start").dt.date().alias("_candle_date"))
     mapping = _split_factor_by_candle_date(df["_candle_date"].unique().sort(), splits)
 
-    df = df.join(mapping.select(["_candle_date", "_split_factor"]), on="_candle_date", how="left")
+    df = _left_join_keep_order(
+        df, mapping.select(["_candle_date", "_split_factor"]), "_candle_date"
+    )
     df = df.with_columns(pl.col("_split_factor").fill_null(1.0))
 
     # Évite division par zéro (facteur invalide → no-op sur la barre)
@@ -187,7 +203,7 @@ def apply_dividend_adjustment(
         pl.col("_div_factor").fill_null(1.0).alias("_div_factor")
     )
 
-    df = df.join(mapping.select(["_candle_date", "_div_factor"]), on="_candle_date", how="left")
+    df = _left_join_keep_order(df, mapping.select(["_candle_date", "_div_factor"]), "_candle_date")
     df = df.with_columns(pl.col("_div_factor").fill_null(1.0))
 
     for col in _PRICE_COLS:

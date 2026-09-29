@@ -22,11 +22,14 @@ de chaîne quand aucune normalisation tick_size ni ajustement n'est demandé.
 from __future__ import annotations
 
 from datetime import date, timedelta
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import polars as pl
 
 from myquantstore.instruments import Instrument
+
+if TYPE_CHECKING:
+    from myquantstore.config import Settings
 
 
 @runtime_checkable
@@ -194,6 +197,44 @@ def build_chain(instrument: Instrument, contracts_df: pl.DataFrame | None = None
     else:
         # forex, stocks, indices → symbole unique
         return SingleSymbolChain(instrument)
+
+
+def build_local_chain(instrument: Instrument, settings: Settings) -> InstrumentChain | None:
+    """Chaîne **sans réseau** : futures = cache contrats local, même périmé.
+
+    Source unique pour ``serve``, ``query --no-cascade`` et ``doctor stability`` :
+    à cache identique, ces surfaces dédupliquent le roll de la même façon.
+    ``None`` si aucun cache contrats futures (``query()`` départage alors sans chaîne).
+    """
+    from myquantstore.logging_setup import get_logger
+
+    logger = get_logger("chains")
+    if instrument.type.value == "futures":
+        from myquantstore.contracts.cache import ContractsCache
+        from myquantstore.storage.parquet_io import read_parquet
+
+        cache = ContractsCache(instrument.symbol, settings)
+        if not cache.exists:
+            logger.debug(f"Pas de cache contrats local pour {instrument.key}")
+            return None
+        try:
+            contracts_df = read_parquet(cache.parquet_path)
+        except FileNotFoundError:
+            return None
+        try:
+            return build_chain(
+                instrument,
+                contracts_df=contracts_df,
+                days_before_expiry=settings.days_before_expiry,
+            )
+        except Exception as exc:
+            logger.warning(f"Chaîne locale {instrument.key} échouée: {exc}")
+            return None
+    try:
+        return build_chain(instrument)
+    except Exception as exc:
+        logger.warning(f"Chaîne locale {instrument.key} échouée: {exc}")
+        return None
 
 
 # Réexport pratique de la période "far future" pour d'autres modules

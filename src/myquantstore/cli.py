@@ -2285,7 +2285,7 @@ def _cmd_doctor_stability(args: argparse.Namespace) -> int:
     from myquantstore.pipeline.historian import resolve_fetch_resolutions
     from myquantstore.query.reader import parse_query_datetime
     from myquantstore.query.timezone import resolve_timezone
-    from myquantstore.serve.server import _local_chain
+    from myquantstore.chains import build_local_chain
     from myquantstore.storage.raw_dumps import raw_dumps_exist
     from myquantstore.storage.stability import DISK_MISSING, DISK_STALE, check_stability
 
@@ -2329,7 +2329,7 @@ def _cmd_doctor_stability(args: argparse.Namespace) -> int:
         table.add_column(col)
     reports = []
     for inst, res in pairs:
-        chain = _local_chain(inst, settings) if inst.type == InstrumentType.FUTURES else None
+        chain = build_local_chain(inst, settings) if inst.type == InstrumentType.FUTURES else None
         with console.status(f"{inst.key} [{res}] : {args.repeats} reconstructions…"):
             report = check_stability(
                 inst, settings, res, chain, repeats=args.repeats, start=start, end=end, timezone=tz
@@ -2363,6 +2363,11 @@ def _cmd_doctor_stability(args: argparse.Namespace) -> int:
             console.print(
                 f"  [red]INSTABLE[/red] {label} · {div.step} · reconstruction "
                 f"{div.rebuild} : {div.detail}"
+            )
+        if report.aggregate_stable and report.unstable_variants:
+            console.print(
+                f"  [red]→[/red] {label} : agrégat stable, l'écart vient de query() "
+                "lui-même (même agrégat, réponses différentes) — bug à corriger dans query."
             )
         for name, error in report.errors.items():
             console.print(f"  [red]ERREUR[/red] {label} · {name} : {error}")
@@ -2926,7 +2931,7 @@ def _cmd_query(settings: Settings, args: argparse.Namespace) -> int:
                     console.print(f"[red]Erreur cascade:[/red] {e}")
                     return 1
         else:
-            from myquantstore.chains import build_chain
+            from myquantstore.chains import build_local_chain
             from myquantstore.storage.aggregate_cache import aggregate_exists
 
             if not aggregate_exists(instrument, settings, resolution=resolution):
@@ -2935,9 +2940,9 @@ def _cmd_query(settings: Settings, args: argparse.Namespace) -> int:
                     "Exécutez 'myquantstore setup-key' puis 'myquantstore fetch --timeframe 1min'."
                 )
                 return 1
-            chain = build_chain(instrument)
+            chain = build_local_chain(instrument, settings)
     else:
-        from myquantstore.chains import build_chain
+        from myquantstore.chains import build_local_chain
         from myquantstore.storage.aggregate_cache import aggregate_exists
 
         if not aggregate_exists(instrument, settings, resolution=resolution):
@@ -2946,18 +2951,13 @@ def _cmd_query(settings: Settings, args: argparse.Namespace) -> int:
                 "Exécutez 'myquantstore aggregate' d'abord."
             )
             return 1
-        if instrument.type == InstrumentType.FUTURES:
-            from myquantstore.contracts.cache import ContractsCache
-
-            cache = ContractsCache(instrument.symbol, settings)
-            contracts_df = cache.get()
-            chain = build_chain(
-                instrument,
-                contracts_df=contracts_df,
-                days_before_expiry=settings.days_before_expiry,
+        # Sans réseau, comme serve : cache contrats local même périmé.
+        chain = build_local_chain(instrument, settings)
+        if chain is None and instrument.type == InstrumentType.FUTURES:
+            console.print(
+                f"[yellow]Note:[/yellow] pas de cache contrats local pour {instrument.key} : "
+                "roll départagé sans chaîne (contrat le plus récent)."
             )
-        else:
-            chain = build_chain(instrument)
 
     try:
         df = query(
