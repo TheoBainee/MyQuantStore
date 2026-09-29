@@ -37,7 +37,8 @@ déduplique **par défaut** (``dedup_timestamps=True``) après les ajustements
 (Panama voit encore les deux contrats) et le bilan tick size. Si une
 ``RolloverChain`` est fournie, le contrat actif à la date de la barre gagne
 (segment ``[active_from, active_until)``), à défaut le plus récent de la chaîne ;
-sinon ``keep="last"``. ``--no-dedup-timestamps`` conserve les deux lignes.
+sinon le contrat le plus récent (première barre la plus tardive dans l'agrégat),
+jamais l'ordre des lignes. ``--no-dedup-timestamps`` conserve les deux lignes.
 Le chart s'appuie sur ce défaut (plus de ``unique`` côté chart).
 """
 
@@ -209,6 +210,10 @@ def query(
     # --- Lecture du cache agrégé (résolution) ---
     df = read_aggregate(instrument, settings, resolution=res)
     df = ensure_window_start_utc(df)
+    # Rang « contrat le plus récent » calculé sur l'agrégat complet (avant start/end)
+    ticker_first_seen = (
+        _ticker_first_seen(df) if dedup_timestamps and "ticker" in df.columns else None
+    )
 
     # --- Filtrage temporel (start/end) en UTC aware ---
     if start is not None:
@@ -251,7 +256,7 @@ def query(
 
     # --- Dédup timestamps (après adjust / bilan, avant normalize + resample) ---
     if dedup_timestamps:
-        df = _dedup_timestamps(df, chain)
+        df = _dedup_timestamps(df, chain, ticker_first_seen)
 
     # --- Normalisation tick size (à la lecture) ---
     if normalize_tick_size and chain is not None:
@@ -292,9 +297,19 @@ def query(
     return localize_window_start(df, tz, is_extraday=is_extraday)
 
 
+def _ticker_first_seen(df: pl.DataFrame) -> pl.DataFrame:
+    """Première barre de chaque ticker : plus elle est tardive, plus le contrat est récent."""
+    return (
+        df.group_by("ticker")
+        .agg(pl.col("window_start").min().alias("_first_seen"))
+        .select(pl.col("ticker").cast(pl.Utf8).alias("_roll_ticker"), "_first_seen")
+    )
+
+
 def _dedup_timestamps(
     df: pl.DataFrame,
     chain: InstrumentChain | None,
+    ticker_first_seen: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     """Une barre par ``window_start`` (jour de roll : deux contrats).
 
@@ -302,13 +317,24 @@ def _dedup_timestamps(
     barre gagne (``active_from <= date < active_until``, date = ``session_end_date``
     si présente, sinon date UTC de ``window_start``) ; à défaut (aucun des deux
     actif), le contrat le plus récent de la chaîne.
-    Sans chaîne, ``keep="last"`` après tri sur ``window_start``.
+    Sans chaîne (ou contrats hors chaîne), le contrat **le plus récent** gagne :
+    première barre la plus tardive dans ``ticker_first_seen`` (agrégat complet ;
+    à défaut ``df``), puis nom de ticker. Le choix ne dépend jamais de l'ordre
+    des lignes de l'agrégat.
     """
     if df.is_empty() or "window_start" not in df.columns:
         return df
+    if "ticker" not in df.columns:
+        return df.unique(subset=["window_start"], keep="last").sort("window_start")
+
+    df = df.with_columns(pl.col("ticker").cast(pl.Utf8).alias("_roll_ticker"))
+    first_seen = ticker_first_seen if ticker_first_seen is not None else _ticker_first_seen(df)
+    df = df.join(first_seen, on="_roll_ticker", how="left")
+    sort_keys = ["window_start", "_first_seen", "_roll_ticker"]
+    helper_cols = ["_roll_ticker", "_first_seen"]
 
     segments = getattr(chain, "segments", None) if chain is not None else None
-    if segments and "ticker" in df.columns:
+    if segments:
         seg_df = pl.DataFrame(
             {
                 "_roll_ticker": [seg.ticker for seg in segments],
@@ -328,23 +354,18 @@ def _dedup_timestamps(
             if "session_end_date" in df.columns
             else pl.col("window_start").dt.date()
         )
-        df = df.with_columns(pl.col("ticker").cast(pl.Utf8).alias("_roll_ticker")).join(
-            seg_df, on="_roll_ticker", how="left"
-        )
+        df = df.join(seg_df, on="_roll_ticker", how="left")
         df = df.with_columns(
             ((bar_date >= pl.col("_roll_from")) & (bar_date < pl.col("_roll_until")))
             .fill_null(False)
             .alias("_roll_active"),
             pl.col("_roll_rank").fill_null(-1),
         )
-        df = df.sort(["window_start", "_roll_active", "_roll_rank"]).unique(
-            subset=["window_start"], keep="last"
-        )
-        return df.drop(
-            ["_roll_ticker", "_roll_rank", "_roll_from", "_roll_until", "_roll_active"]
-        ).sort("window_start")
+        sort_keys = ["window_start", "_roll_active", "_roll_rank", "_first_seen", "_roll_ticker"]
+        helper_cols += ["_roll_rank", "_roll_from", "_roll_until", "_roll_active"]
 
-    return df.unique(subset=["window_start"], keep="last").sort("window_start")
+    df = df.sort(sort_keys).unique(subset=["window_start"], keep="last")
+    return df.drop(helper_cols).sort("window_start")
 
 
 def _apply_stock_split_adjustment(

@@ -62,10 +62,11 @@ Tu es un expert Python senior. Maintiens et développe MyQuantStore, outil profe
 - Meta sidecar : inclut `resolution`, `source` (`massive` | `yahoo`)
 - Pour futures 1min : ticker = contrat (ESM5 etc.) ; pour futures 1day : ticker = root (ES, série `=F`)
 - Pour stocks/forex/indices : ticker = symbole
-- Agrégation **par résolution** (pas de logique rollover dedans) : concat dumps de la résolution, dédup sur **`(window_start, ticker)`** keep=last, Categorical + Int32 casts.
+- Agrégation **par résolution** (pas de logique rollover dedans) : concat dumps de la résolution, dédup sur **`(window_start, ticker)`** keep=last, Categorical + Int32 casts, tri **total** `(window_start, ticker)`.
 - **Invariant** : l'agrégat d'une résolution se reconstruit uniquement depuis les dumps de **cette** résolution.
 - Futures 1min : au jour de roll, l'agrégat **peut** avoir deux lignes au même `window_start` (deux `ticker`). Volontaire — clé naturelle = (timestamp, contrat).
-- `query()` déduplique **par défaut** (`dedup_timestamps=True`) : une barre par timestamp, contrat actif de la chaîne à la date de la barre (à défaut le plus récent). `--no-dedup-timestamps` conserve les deux. Le chart utilise ce défaut (pas de `unique` côté chart).
+- `query()` déduplique **par défaut** (`dedup_timestamps=True`) : une barre par timestamp, contrat actif de la chaîne à la date de la barre (à défaut le plus récent). Sans chaîne (ex. serve sans cache contrats) : contrat le plus récent = première barre la plus tardive dans l'agrégat. `--no-dedup-timestamps` conserve les deux. Le chart utilise ce défaut (pas de `unique` côté chart).
+- **Invariant de stabilité** : à dumps constants, ré-agréger ne change **rien** (agrégat et réponses `query()` / `/v1/query` identiques, ordre des lignes compris). Aucun choix ne dépend de l'ordre des lignes ni d'un tri non total. Garde-fou : `tests/test_aggregate_stability.py`.
 - **Pas de resample 1min → day** en production (extraday = Yahoo only).
 
 ### Gestion des contrats et rollovers (futures)

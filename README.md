@@ -140,7 +140,7 @@ Deux jobs indépendants (`schedule <verbe> [fetch|caches]`, sans job = **fetch**
 **fetch** (samedi 07:00) — historisation OHLCV :
 
 1. **`fetch`** — dumps + mise à jour agrégat côté historian
-2. **`aggregate`** — régénère le cache Parquet `data/aggregate/` (pour brancher des traitements externes directement sur l'agrégat). Futures 1min : clé `(window_start, ticker)` — au roll, deux contrats peuvent partager le même timestamp. `query` déduplique par défaut (`--no-dedup-timestamps` pour garder les deux ; voir `docs/TECHNICAL_DESIGN.md` §8.6).
+2. **`aggregate`** — régénère le cache Parquet `data/aggregate/` (pour brancher des traitements externes directement sur l'agrégat). Futures 1min : clé `(window_start, ticker)` — au roll, deux contrats peuvent partager le même timestamp. `query` déduplique par défaut (`--no-dedup-timestamps` pour garder les deux ; voir `docs/TECHNICAL_DESIGN.md` §8.6). À dumps constants, relancer `aggregate` ne change jamais la réponse de `query`.
 3. **`status --check`** — exit 1 si données STALE / problème de fraîcheur (idéal monitoring)
 
 **caches** (samedi 03:00) — refresh listing Massive :

@@ -119,9 +119,11 @@ def aggregate(
     nb_after_dedup = df.height
     dedup_removed = nb_before_dedup - nb_after_dedup
 
-    # Tri par window_start (chronologique)
+    # Tri total (window_start, ticker) : au jour de roll deux tickers partagent un
+    # window_start ; trier sur window_start seul laisse leur ordre au hasard des
+    # threads Polars et rend l'agrégat (donc query) instable d'un run à l'autre.
     if "window_start" in df.columns:
-        df = df.sort("window_start")
+        df = df.sort([pl.col("window_start"), pl.col("ticker").cast(pl.Utf8)])
 
     source_dump_count = df["run_id"].n_unique() if "run_id" in df.columns else 0
 

@@ -684,7 +684,7 @@ def aggregate(instrument, settings, resolution="1min") -> pl.DataFrame:
     # 1. read_all_runs(instrument, settings, resolution=…)
     # 2. Cast Categorical / Int32
     # 3. unique(subset=["window_start", "ticker"], keep="last")
-    # 4. sort window_start
+    # 4. sort (window_start, ticker) — tri total, déterministe
     # 5. write_aggregate(…, resolution=…, source=massive|yahoo)
 ```
 
@@ -692,7 +692,9 @@ Dédup `keep="last"` : dumps lus par ordre chronologique des `run_ts` (re-fetch 
 
 **Clé naturelle = `(window_start, ticker)`**, pas `window_start` seul. Au jour de roll futures 1min, l'ancien contrat est fetché avec `window_start.lte=active_until` et le nouveau avec `gte=active_from` (même date = jour ouvré suivant le `rollover_date` ; dates calendaires inclusives). Les deux dumps peuvent donc contenir des barres au **même** `window_start`. L'agrégat **conserve les deux** : ce sont deux faits (deux contrats). Un `unique(window_start)` dans l'agrégat serait une décision de rollover (quel contrat gagne) ; `keep="last"` sans règle d'ordre n'est **pas** « garder le front-month ».
 
-La série 1-timestamp = 1-barre est un choix de **`query()`** (`dedup_timestamps=True` par défaut, après `--adjust` et le bilan tick size, avant normalize/resample). Si une `RolloverChain` est fournie, le contrat **actif** à la date de la barre gagne (`session_end_date` dans `[active_from, active_until)`), à défaut le plus récent de la chaîne. `--no-dedup-timestamps` conserve les deux lignes. Le chart s'appuie sur ce défaut (§12bis.3). Le resample `k>1` fusionne aussi via `group_by`.
+La série 1-timestamp = 1-barre est un choix de **`query()`** (`dedup_timestamps=True` par défaut, après `--adjust` et le bilan tick size, avant normalize/resample). Si une `RolloverChain` est fournie, le contrat **actif** à la date de la barre gagne (`session_end_date` dans `[active_from, active_until)`), à défaut le plus récent de la chaîne. Sans chaîne (ou contrat hors chaîne), le contrat le plus récent gagne : première barre la plus tardive dans l'agrégat complet (avant filtre `start`/`end`), puis nom de ticker. `--no-dedup-timestamps` conserve les deux lignes. Le chart s'appuie sur ce défaut (§12bis.3).
+
+**Stabilité** : à dumps constants, `aggregate()` rejoué N fois écrit le même agrégat (tri total `(window_start, ticker)`) et `query()` renvoie strictement la même réponse. Aucune règle ne s'appuie sur l'ordre des lignes : `sort("window_start")` seul laisse deux contrats du jour de roll dans un ordre dépendant des threads Polars, et un `keep="last"` derrière choisissait alors le contrat au hasard (constaté avant correctif : ~700 barres/jour de roll changeant de contrat d'un run à l'autre sans chaîne). Le resample `k>1` fusionne aussi via `group_by`.
 
 ---
 
@@ -717,7 +719,7 @@ La fonction `query` accepte plusieurs flags et paramètres de transformation :
 - `check_ticksize_accuracy` (`--check-ticksize-accuracy`) : analyse la conformité des prix au tick size et **affiche un bilan** (cf §8.3), sans modifier les données.
 - `limit` : retourne les N premières lignes (`df.head(N)`). Le chart server passe `limit=None` et fait `df.tail(N)` après coup pour obtenir les candles les plus récentes.
 - `resolution` / `k_days` / `week_aligned` : track extraday Yahoo (`1day`).
-- `dedup_timestamps` (`--no-dedup-timestamps` pour désactiver) : **ON par défaut**. Une barre par `window_start` ; au roll, le contrat actif à la date de la barre gagne (à défaut le plus récent de la chaîne). Après `--adjust` et le bilan tick size, avant normalize/resample.
+- `dedup_timestamps` (`--no-dedup-timestamps` pour désactiver) : **ON par défaut**. Une barre par `window_start` ; au roll, le contrat actif à la date de la barre gagne (à défaut le plus récent de la chaîne ; sans chaîne, le plus récent de l'agrégat). Après `--adjust` et le bilan tick size, avant normalize/resample.
 - `forward_fill` (`--forward-fill`, serve `?forward_fill=true`, chart `--forward-fill`) : **OFF par défaut**. Après resample, réinsère les barres absentes (intra-session 1min / jours ouvrés 1day) avec OHLC = dernier close, volume 0, `candle_count` 0.
 
 `query()` déduplique **par défaut** sur `window_start`. `--no-dedup-timestamps` renvoie les doublons de roll tels quels (§8.6). L'agrégat, lui, n'est pas une série continue.
@@ -1296,6 +1298,7 @@ tickers d'agrégat, le contrat courant et sa maturité (cache local). Réponse d
 | `test_parquet_io.py` | Write/read round-trip, schéma canonique respecté, sidecar `.meta.json` écrit systématiquement avec champs attendus |
 | `test_raw_dumps.py` | Sauvegarde par `{product_code}/{ticker}/{run_ts}`, listage, lecture, sidecar |
 | `test_aggregator.py` | Fusion 2 dumps chevauchants, dédup `(window_start, ticker)` keep=last, tri, cast Categorical, cast `volume`/`transactions` en `Int32` |
+| `test_aggregate_stability.py` | Ré-agrégation ×5 à dumps constants (roll ESH5→ESM5 + refetch, ~7k barres) : agrégat et `query()` (avec / sans chaîne, resample, forward fill, intraday, 1day) et `/v1/query` strictement identiques ; contrat le plus récent au roll sans chaîne |
 | `test_rollover.py` | Expiration vendredi 19 → dernier jour conservé vendredi 12 ; lundi suivant = nouveau contrat ; `continuous_segments` correct ; `tick_size_for_ticker` ; `to_table()` |
 | `test_stocks_fetch.py` / `test_v2_single_fetch.py` / `test_yahoo_api.py` | Fetchers multi-type + Yahoo daily (ranges, skip jour, reverse split) |
 | `test_reader.py` | `adjust_rollover=False` retourne chaîne ; `True` applique back-adjust futures / dividends stocks ; filtres `start`/`end` ; `normalize_tick_size` Int32 ; `check_ticksize_accuracy` bilan ; incompatibilité `normalize_tick_size` × `adjust_rollover` ; resampling / intraday |
